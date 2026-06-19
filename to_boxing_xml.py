@@ -29,10 +29,16 @@ import xml.etree.ElementTree as ET
 
 from skel2smpl.smpl import SMPL, _TRANS
 from skel2smpl.fit import fit_markers, forward_proper, fit_smpl_betas_limblen
+from skel2smpl.geometry import exp_so3, rotation_matrix_to_axis_angle
 from skel2smpl.constants import _RX_NEG90, N_JOINTS
 from skel2smpl import datasets as D
 
 RXP = _RX_NEG90.t().double()                 # SMPL native (Y-up) → proper; Q·_TRANS = I
+# The fit runs in the mocap Y-up frame (human up = +Y); the boxing loader applies a fixed
+# M=Rx(−90) and the viewer is Y-up, so an unrotated export renders head-down. Boxing's own
+# bodies are Y-up (head+Y) through the loader. Bake Rx(+90) so M·(FRAME_FIX·FK) is Y-up head+Y,
+# matching boxing exactly (Rx90·(+Y)=+Z, then loader M·(+Z)=+Y). §P24.
+FRAME_FIX = torch.tensor([[1., 0, 0], [0, 0, -1], [0, 1, 0]], dtype=torch.float64)   # Rx(+90)
 LAM_S_PIN = 1e4                              # pin s≈1 (boxing has no scale field)
 BETA_REG = 0.3                               # optimizeShape L2-β prior (β-only carries size)
 LAM_BETA_VERT = 1e-3                         # ExPI vertex-attach: β identifiable
@@ -87,12 +93,17 @@ def fit_to_boxing(markers, marker_bone, marker_vert):
             markers, mb, smpl, RXP, bone_scale=None, betas_init=beta0, fit_beta=False,
             lam_s=LAM_S_PIN)
     T = pose.shape[0]
-    j0 = forward_proper(smpl, pose, RXP, betas=beta)[:, 0]                       # FK_root (native)
-    trans_box = (trans.to(j0) - j0).float()
-    aa_box = torch.cat([pose.float(), torch.zeros(T, 24 - N_JOINTS, 3)], dim=1)
     jp = forward_proper(smpl, pose, RXP, betas=beta, scale=1.0, root_target=trans, want_verts=False)
     err = (jp[:, mb] - markers.to(jp)).norm(dim=-1).mean().item() * 1000.0 if marker_vert is None \
         else _vert_err(smpl, pose, beta, trans, marker_vert, markers)
+    # bake the 180° X-flip into global_orient + trans so the boxing loader (M=Rx−90) is Z-up upright
+    pose = pose.clone()
+    ff = FRAME_FIX.to(pose.dtype)
+    pose[:, 0] = rotation_matrix_to_axis_angle(ff @ exp_so3(pose[:, 0]))
+    trans = (ff @ trans.to(pose.dtype).unsqueeze(-1)).squeeze(-1)
+    j0 = forward_proper(smpl, pose, RXP, betas=beta)[:, 0]                       # FK_root of fixed pose
+    trans_box = (trans.to(j0) - j0).float()
+    aa_box = torch.cat([pose.float(), torch.zeros(T, 24 - N_JOINTS, 3)], dim=1)
     return aa_box, trans_box, beta.float(), err, float(s)
 
 
@@ -152,7 +163,7 @@ def convert(dataset, seq, out, nf, verify=True):
     for (markers, marker_bone, marker_vert) in load_performers(dataset, seq, nf):
         aa_box, trans_box, beta, err, s = fit_to_boxing(markers, marker_bone, marker_vert)
         params.append((aa_box, trans_box, beta))
-        gts.append(np.asarray(markers, np.float64))
+        gts.append(np.einsum("mn,tjn->tjm", FRAME_FIX.numpy(), np.asarray(markers, np.float64)))
         print(f"    performer {len(params) - 1}: marker err {err:.1f} mm  ‖β‖={beta.norm():.2f}  s={s:.4f}")
         if verify:
             pose = aa_box[:, :N_JOINTS]

@@ -10,8 +10,11 @@
     plain pose fit (`fit_markers(fit_beta=False, bone_scale=None, lam_s=1e4)`). ExPI → vertex-β path.
   - `fit.py` — new `fit_beta` freeze flag on `fit_markers` (additive; koopman default unchanged).
   - §P24 in MASTER_PLAN (pure-plain-SMPL decision + bone_scale off-ramp fallback + gates G24a–d).
-  - MEASURED ninjutsu shot_001 200f: err 47/36 mm, ‖β‖ 1.9/1.6 (sane), s=1.0; renders via boxing loader
-    as clean plausible bodies (`/tmp/ninj_plain.png`).
+  - MEASURED ninjutsu shot_001 200f: err 47/36 mm, ‖β‖ 1.9/1.6 (sane), s=1.0; renders via the UNCHANGED
+    boxing loader as clean, UPRIGHT, grounded bodies, GT skeleton co-located.
+  - **FRAME FIX (the "not z up" bug):** fit is mocap Y-up; boxing loader applies M=Rx−90 + Y-up viewer;
+    boxing's own bodies are Y-up (head+Y) through the loader. Bake `FRAME_FIX=Rx(+90)` into the exported
+    global_orient+trans so M·(FRAME_FIX·FK) is Y-up head+Y, matching boxing. Verified up-axis=Y (cos 0.99).
 - **TRADEOFF (measured):** plain β can't carry differential limb length from joints — upper arms ~21–28%
   short vs the bone_scale fit (16 mm). Off-ramp (optional `bone_scale_N` attr, 3-line loader change) is the
   documented fallback if the render review rejects the plain limbs.
