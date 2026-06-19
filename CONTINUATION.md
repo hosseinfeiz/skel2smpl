@@ -1,3 +1,29 @@
+# SESSION_CONTINUATION — 2026-06-19 — ACTIVE: §P24 convert all 4 datasets → boxing-format SMPL XML (skel2smpl runtime-free)
+
+## §P24 (ACTIVE, 2026-06-19) — boxing-XML conversion
+- **Goal (user):** "create SMPL format for all datasets; then we don't need skel2smpl anywhere — just like
+  boxing for all pipelines." Convert 2C/ExPI/LindyHop/Ninjutsu → EXACT boxing `smpl.xml` (β+75-pose+trans),
+  loaded by the UNCHANGED `pose_estimation/viz.py::smpl_xml_payload`. skel2smpl becomes an offline tool.
+- **DONE this session (skel2smpl commits `023f859` plan, `c25455b` tool):**
+  - `to_boxing_xml.py` — converts a sequence (both performers) → boxing XML. Frame Q·M=I exact
+    (G24a round-trip 0.0024 mm PASS). β via `fit_smpl_betas_limblen` (optimizeShape, β-only) FROZEN +
+    plain pose fit (`fit_markers(fit_beta=False, bone_scale=None, lam_s=1e4)`). ExPI → vertex-β path.
+  - `fit.py` — new `fit_beta` freeze flag on `fit_markers` (additive; koopman default unchanged).
+  - §P24 in MASTER_PLAN (pure-plain-SMPL decision + bone_scale off-ramp fallback + gates G24a–d).
+  - MEASURED ninjutsu shot_001 200f: err 47/36 mm, ‖β‖ 1.9/1.6 (sane), s=1.0; renders via boxing loader
+    as clean plausible bodies (`/tmp/ninj_plain.png`).
+- **TRADEOFF (measured):** plain β can't carry differential limb length from joints — upper arms ~21–28%
+  short vs the bone_scale fit (16 mm). Off-ramp (optional `bone_scale_N` attr, 3-line loader change) is the
+  documented fallback if the render review rejects the plain limbs.
+- **AWAITING USER:** render-review decision — accept plain-SMPL & run the FULL conversion (~596 seqs), OR
+  take the bone_scale off-ramp, OR see a GT-overlay render first. Pilot XMLs NOT yet written to data/ (only
+  /tmp). Phases left: P2 full `--all` conversion (gated), P3 cutover `vizsys/smpl_fit.py` → load XML.
+- **Stale files (re-Read before edit):** `skel2smpl/to_boxing_xml.py`, `skel2smpl/fit.py::fit_markers`
+  (fit_beta), `vizsys/smpl_fit.py` (Phase-3 cutover target, NOT yet touched), `pose_estimation/viz.py`
+  (loader bone_scale change was added then REVERTED — currently upstream/plain).
+
+---
+
 # SESSION_CONTINUATION — 2026-06-19 14:24 UTC — all 4 fittable datasets on ONE marker solver; girth (§P23.v) is the open next phase
 
 > **The headline.** `skel2smpl` is now a clean standalone package: the per-dataset skeleton
