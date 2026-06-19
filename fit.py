@@ -341,7 +341,8 @@ def resample_spine_targets(obs_joints, smpl_model, betas=None, scale: float = 1.
 def fit_smpl_betas_limblen(joints_obs, pose, smpl_model, n_frames: int = 12,
                            max_iter: int = 50, w_data: float = 1000.0,
                            lam_reg: float = 0.5, spine_weight: float = 0.1,
-                           return_scale: bool = False, return_bone_err: bool = False):
+                           return_scale: bool = False, return_bone_err: bool = False,
+                           obs_mask=None):
     """P12: EasyMocap-style limb-LENGTH SMPL shape solve — a port of optimizeShape
     (pose_estimation/kinematics/optimization.py:785–836). β is a SINGLE free variable
     for the whole sequence, solved by LBFGS(strong_wolfe, max_iter=50) so SMPL's bone
@@ -382,6 +383,10 @@ def fit_smpl_betas_limblen(joints_obs, pose, smpl_model, n_frames: int = 12,
     spine = set(SPINE_NECK_COLLAR)
     conf = torch.tensor([spine_weight if c in spine else 1.0       # downweight corrupted
                          for _, c in _SMPL22_BONES], dtype=dt)     #   arrival bones
+    if obs_mask is not None:                                       # §P24 phantom-bone exclusion:
+        om = torch.as_tensor(obs_mask, dtype=torch.bool)          #   a bone whose parent or child is
+        conf = conf * torch.tensor([float(om[p] and om[c])        #   UNobserved measures a length to
+                                    for p, c in _SMPL22_BONES], dtype=dt)  # the origin → drop it (0).
 
     beta = torch.zeros(smpl_model.n_betas, dtype=dt, requires_grad=True)
     # §P9-redux: a uniform SIZE scale s (subject overall size, which β cannot carry

@@ -1514,6 +1514,17 @@ not this fitting module. Cross-refs to §P8 below point back to that plan.
   re-point `smpl_fit_payload` to the fit. If G24c rejects plain-SMPL, the minimal off-ramp is an OPTIONAL
   `bone_scale_N` attr read by the shared loader (`SMPL.forward` ALREADY accepts `bone_scale`, `smpl.py:120`;
   boxing files lack it → None → unchanged) — still one boxing-compatible loader, but limb-exact.
+- **PHANTOM-BONE β AMENDMENT (2026-06-19, measured).** The frozen-β `optimizeShape`
+  (`fit_smpl_betas_limblen`) limb-length term measures lengths between consecutive SMPL joints
+  in `obs22`, which has ZEROS at unobserved joints. 2C and LindyHop never observe joints **9 (spine3)
+  and 12 (neck)** (`C2_MAP` has no entry; ReMoCap `w<0.5` there), so bones 6→9 / 9→13 / 9→14 / 12→15
+  measure phantom ~2.3 m "bones" from a real joint to the origin. The `spine_weight=0.1` downweight is
+  insufficient → β inflates to **‖β‖≈32, 153 mm** for 2C (vs ninjutsu's clean 47 mm, which observes all
+  22). FIX (additive): `fit_smpl_betas_limblen(obs_mask=…)` — a [24] bool of observed joints; bones with
+  an unobserved endpoint get conf 0 (excluded), not merely downweighted. `to_boxing_xml.py` passes the
+  observed-joint set. Default `obs_mask=None` = prior behavior (koopman/§P12 callers unchanged). Ninjutsu
+  unaffected (full observation). Gate: 2C/LindyHop ‖β‖ back in-distribution (≤~3) and marker err in the
+  ninjutsu band (~40–70 mm), not 153 mm.
 - **DECISION (user, 2026-06-19): PURE plain SMPL — exact boxing schema, NO bone_scale, NO loader change.**
   The shared `smpl_xml_payload` stays byte-for-byte upstream. β is estimated by the EasyMocap
   `optimizeShape` (skel2smpl `fit_smpl_betas_limblen`, β-only, no scale — the method the user named in

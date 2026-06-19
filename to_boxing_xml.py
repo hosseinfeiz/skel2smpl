@@ -87,8 +87,10 @@ def fit_to_boxing(markers, marker_bone, marker_vert):
         T = markers.shape[0]
         obs22 = torch.zeros(T, N_JOINTS, 3, dtype=torch.float64)
         obs22[:, mb] = markers.double()
+        obs_mask = torch.zeros(N_JOINTS, dtype=torch.bool)          # §P24 phantom-bone exclusion:
+        obs_mask[mb] = True                                         # 2C/LindyHop miss joints 9,12
         beta0 = fit_smpl_betas_limblen(obs22, torch.zeros(T, N_JOINTS, 3, dtype=torch.float64),
-                                       smpl, lam_reg=BETA_REG, return_scale=False)
+                                       smpl, lam_reg=BETA_REG, return_scale=False, obs_mask=obs_mask)
         pose, trans, beta, s, _ = fit_markers(
             markers, mb, smpl, RXP, bone_scale=None, betas_init=beta0, fit_beta=False,
             lam_s=LAM_S_PIN)
