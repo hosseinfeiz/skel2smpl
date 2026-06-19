@@ -14,7 +14,19 @@
 - Phase name: "MoSh surface-marker solve for joint-incongruent reference skeletons."
 - Status: **in-progress** — fitting works (all 4 datasets render plausibly); girth-recovery (§P23.v) open.
 
-## What was just done (2026-06-19 b — marker-aware anchors, commit `15a55a0`)
+## What was just done (2026-06-19 c — root-orientation init, commit `4ebbfb3`)
+- **Spinning-root + "elbow not fitted" FIXED** (user: ninjutsu still rotating root). Root cause: the marker
+  objective is gauge-degenerate — a body turn can be absorbed by the ROOT or by twisting spine/hips/shoulders.
+  From zero-init the optimizer chose the twist minimum on turning/acrobatic frames → erratic spinning root +
+  contorted torso (shot_007 reactor: root flailed 9–134°, mean 59.5 mm, peak 136 mm). The actor tracked fine,
+  so static shot_001 looked OK — bug only bites on real rotation.
+- **FIX** `fit.py::_root_init_kabsch` + `_kabsch_so3`: seed `pose[:,0]` per-frame by rigid Procrustes/Kabsch of
+  the torso markers onto the SMPL rest torso joints (`_ROOT_CORE={0,1,2,3,6,9,12,15,16,17}`). MoSh/SMPLify
+  global-orient init. Render-verified: reactor 59.5→18.8 mm (peak 28.7), frame-130 contortion → natural lunge
+  (17/49→17/18 mm). No regression: 2C 12/11, ExPI 27/24. MASTER_PLAN §P23 "ROOT-ORIENTATION INIT AMENDMENT".
+- *Not re-rendered:* LindyHop (same recipe, mild motion, root-init only helps) — low risk, worth a glance next.
+
+## What was done (2026-06-19 b — marker-aware anchors, commit `15a55a0`)
 - **Two `fit_markers` anchor bugs fixed** (user: "ninjutsu mesh rotating around root … feet should be
   straight"). (1) Torso rest-anchor was hardcoded to {3,6,9,12,13,14}; ReMoCap observes markers there, so
   anchoring locked the spine straight and the body rotated RIGIDLY about the root. Now anchor a torso joint
