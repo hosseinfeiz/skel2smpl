@@ -13,7 +13,12 @@ Data files (gitignored, located via env or bundled under ``data/``):
   VPOSER_PATH     → else data/vposer_v02
 """
 
-from skel2smpl import geometry, constants, adapters, vposer
+from skel2smpl import geometry, constants, adapters, vposer, skeletons, datasets
+from skel2smpl.datasets import (
+    fit_2c, fit_expi, fit_remocap, fit_dataset, fit_smpl, fit_smpl_markers,
+    Fit, DATASETS, C2_MAP, EXPI_MARKERS, EXPI_BONE, EXPI_BONE_SEG, EXPI_EDGES,
+    REMO_NAME, SMPL_NAME, remocap_csvs,
+)
 from skel2smpl.smpl import SMPL
 from skel2smpl.fit import (
     solve_shape,
@@ -46,4 +51,22 @@ __all__ = [
     "constants",
     "adapters",
     "vposer",
+    "skeletons",
+    "datasets",
+    "fit_2c",
+    "fit_expi",
+    "fit_remocap",
+    "fit_dataset",
+    "fit_smpl",
+    "fit_smpl_markers",
+    "Fit",
+    "DATASETS",
+    "C2_MAP",
+    "EXPI_MARKERS",
+    "EXPI_BONE",
+    "EXPI_BONE_SEG",
+    "EXPI_EDGES",
+    "REMO_NAME",
+    "SMPL_NAME",
+    "remocap_csvs",
 ]
