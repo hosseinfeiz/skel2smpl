@@ -14,7 +14,23 @@
 - Phase name: "MoSh surface-marker solve for joint-incongruent reference skeletons."
 - Status: **in-progress** — fitting works (all 4 datasets render plausibly); girth-recovery (§P23.v) open.
 
-## What was just done (this session)
+## What was just done (2026-06-19 b — marker-aware anchors, commit `15a55a0`)
+- **Two `fit_markers` anchor bugs fixed** (user: "ninjutsu mesh rotating around root … feet should be
+  straight"). (1) Torso rest-anchor was hardcoded to {3,6,9,12,13,14}; ReMoCap observes markers there, so
+  anchoring locked the spine straight and the body rotated RIGIDLY about the root. Now anchor a torso joint
+  only when NO marker attaches to it. (2) Feet {7,8,10,11} now ALWAYS rest-anchored → flat human feet (was
+  ankle 37° plantarflex/twist chasing the surface toe marker → ballet-pointe "alien" feet).
+- **Render-verified all 4 datasets**: ninjutsu 16/13, lindyhop 12/12 (↑ from ~18), 2c 12/11 (↑ from 14/17),
+  expi 27/23 (= baseline). Feet flat; ninjutsu spine3 articulates 23° (was 0). Edit is 2 lines in
+  `fit.py::fit_markers` (the `aw` set). MASTER_PLAN §P23 amended ("MARKER-AWARE ANCHOR AMENDMENT").
+- **Caveat:** shot_001 (the render gate) is a near-static stance, so I confirmed the *mechanism* (torso freed,
+  spine articulates, feet flat) + numbers, not a sharp-turn animation end-to-end. A turning shot orbit-render
+  would be the final visual proof of "no rigid root spin."
+- **VPoser is NOT in `fit_markers`** (user asked). Naturalness is hand-tuned limits+anchors+smoothness only;
+  `vposer.py`/`lam_vp` belongs to the old §P18 `solve_pose` path, unused by the marker solve. Wiring VPoser
+  in as a soft prior would replace the per-joint anchors with a learned natural-pose prior (open option).
+
+## What was done earlier (prior session)
 - **Plan split:** moved the SMPL-fitting phases (§P9–P19, §P23) out of `koopman/KOOPMAN_MASTER_PLAN.md`
   into this package's **`MASTER_PLAN.md`** (koopman keeps P8 + operator/AE/reactor; pointer stubs left).
 - **Code move:** `skeletons.py` (was `vr/vizsys/skeletons.py`) + new **`datasets.py`** (all loaders +
