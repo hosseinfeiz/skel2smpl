@@ -711,6 +711,110 @@ def solve_pose(obs_joints, init_pose, smpl_model, Q, betas=None, scale=1.0,
     return (pose.detach(), delta.detach()) if return_offsets else pose.detach()
 
 
+def fit_markers(obs_markers, marker_bone, smpl_model, Q, betas_init=None,
+                bone_scale=None, n_shape_frames: int = 12,
+                iters_shape: int = 500, iters_pose: int = 500, lr: float = 0.02,
+                lam_smooth: float = 0.10, lam_delta: float = 0.02,
+                lam_beta: float = 1.0, lam_contact: float = 0.0,
+                sigma_sq: float = 0.5, sigma_sq0: float = 0.5):
+    """§P23 — true-MoSh surface-marker SMPL solve for a joint-INCONGRUENT reference.
+
+    The reference points are SURFACE markers, NOT SMPL joints (ExPI: hip/knee/heel on
+    the skin, a single upper-back marker, no pelvis/spine/ankle). Each marker m is
+    rigidly attached to a SMPL bone `marker_bone[m]` with a FREE frame-invariant offset
+    delta_m (the surface→joint vector, weakly regularized — NOT the §P13 strong prior):
+        v_m(theta,beta,delta) = body_{b(m)} + s·R^world_{b(m)}·delta_m
+    where body = trans + s·(FK_proper − FK_root). Two MoSh++ stages:
+      Stage I  — on a sequence-SPANNING subset of `n_shape_frames` (diverse poses break
+                 the pose/offset degeneracy): solve shape beta + uniform size s +
+                 per-marker delta + the subset's theta/trans, minimizing robust
+                 ‖v−obs‖² + lam_beta‖beta‖² + lam_delta‖delta‖².
+      Stage II — freeze beta,s,delta; solve per-frame theta_t + free root trans_t
+                 (ExPI has no pelvis marker to ground to), with 2nd-order chordal-accel
+                 smoothness (+ optional contact). MoSh: Loper SIGGRAPH Asia 2014;
+                 MoSh++/AMASS arXiv:1904.03278; ExPI arXiv:2105.08825.
+
+    obs_markers [T,M,3] proper-frame markers; marker_bone [M] long SMPL joint indices.
+    Returns (pose [T,22,3], trans [T,3], beta [n_betas], s float, delta [M,3])."""
+    dt = smpl_model.dtype
+    obs = torch.as_tensor(obs_markers, dtype=dt)
+    T, M = obs.shape[0], obs.shape[1]
+    mb = torch.as_tensor(marker_bone, dtype=torch.long)
+    QM = torch.as_tensor(Q, dtype=dt) @ _RX_NEG90.to(dt)         # native → proper
+    nb = smpl_model.n_betas
+    # root proxy = mean of the hip-attached markers (fallback: marker centroid) for trans init.
+    hipm = torch.tensor([k for k in range(M) if mb[k].item() in (1, 2)], dtype=torch.long)
+    root0 = obs[:, hipm].mean(1) if hipm.numel() else obs.mean(1)   # [T,3]
+    sw = torch.ones(N_JOINTS, dtype=dt)
+    sw[_TORSO] = 3.0; sw[_LEGS] = 3.0; sw[_FEET] = 3.0
+    sw[0] = 1.0          # root carries REAL global rotation (not jitter) — don't over-smooth;
+                         # the lateral hip markers (attached to the pelvis) lag if it is (§P23)
+
+    def markers_of(pose, trans, s, beta, delta):
+        jnat, Rnat = _fk(smpl_model, pose, beta, bone_scale=bone_scale)
+        jp = torch.einsum("mn,tjn->tjm", QM, jnat)
+        Reff = torch.einsum("mn,tjnk->tjmk", QM, Rnat)
+        body = trans[:, None, :] + s * (jp - jp[:, :1])
+        off = torch.einsum("tmkl,ml->tmk", Reff[:, mb], delta)
+        return body[:, mb] + s * off, body
+
+    # ExPI/2C are CLEAN mocap (no marker outliers), so the GMOF runs at a LARGE σ
+    # (≈L2 over the whole working range) — a redescending small-σ robustifier dead-zones
+    # any marker beyond ~1.5σ, freezing whichever lateral hip/head marker is still far
+    # when σ shrinks (measured §P23: 250 mm stuck hips at σ²=0.0025; L2 → 1 mm). `_sig`
+    # keeps a coarse→fine hook (sigma_sq0→sigma_sq) for a future noisy source; default
+    # sigma_sq0==sigma_sq ⇒ constant large σ, gradient everywhere from zero-init.
+    def _sig(i, n):
+        return sigma_sq0 * (sigma_sq / sigma_sq0) ** (i / max(n - 1, 1))
+
+    def data_term(v, sig):
+        return gmof(((v - obs) ** 2).sum(-1), sig).mean()
+
+    def smooth_term(pose, T_):
+        Rloc = exp_so3(pose.reshape(-1, 3)).reshape(T_, N_JOINTS, 3, 3)
+        if T_ >= 3:
+            accel = Rloc[2:] - 2 * Rloc[1:-1] + Rloc[:-2]
+            return ((accel ** 2).sum((-1, -2)) * sw).mean()
+        if T_ >= 2:
+            dR = Rloc[1:] - Rloc[:-1]
+            return ((dR ** 2).sum((-1, -2)) * sw).mean()
+        return torch.zeros((), dtype=dt)
+
+    # ── ONE joint solve over ALL frames: shared beta+s+delta, per-frame theta_t+trans_t.
+    # delta (the surface→bone offset) is frame-INVARIANT but estimated from the WHOLE
+    # sequence — a 12-frame freeze (the MoSh++ efficiency trick) leaves the torso markers
+    # (hip/back/head) under-determined (spine/pelvis gauge freedom) and does NOT generalize
+    # (§P23: frozen-δ gave 200 mm hip residuals). All frames removes that gap.
+    beta = (torch.zeros(nb, dtype=dt) if betas_init is None
+            else torch.as_tensor(betas_init, dtype=dt).clone()).requires_grad_(True)
+    log_s = torch.zeros((), dtype=dt, requires_grad=True)        # s = exp(log_s) > 0
+    delta = torch.zeros(M, 3, dtype=dt, requires_grad=True)
+    pose = torch.zeros(T, N_JOINTS, 3, dtype=dt, requires_grad=True)
+    trans = root0.clone().requires_grad_(True)
+    contact, floor = detect_contacts(obs) if lam_contact > 0 else (None, None)
+    cm = contact.to(dt) if contact is not None else None
+    n_it = iters_shape + iters_pose
+    opt = torch.optim.Adam([beta, log_s, delta, pose, trans], lr=lr)
+    for i in range(n_it):
+        opt.zero_grad()
+        v, body = markers_of(pose, trans, torch.exp(log_s), beta, delta)
+        loss = (data_term(v, _sig(i, n_it)) + lam_smooth * smooth_term(pose, T)
+                + lam_beta * (beta ** 2).mean() + lam_delta * (delta ** 2).sum())
+        if lam_contact > 0:
+            zf = body[:, _FOOT_GROUND, 2]
+            ground_pen = (torch.relu(floor - zf) ** 2 * cm).mean()
+            if T > 1:
+                skate = ((body[1:, _FOOT_GROUND, :2] - body[:-1, _FOOT_GROUND, :2]) ** 2
+                         ).sum(-1)
+                skate = (skate * cm[1:]).mean()
+            else:
+                skate = torch.zeros((), dtype=dt)
+            loss = loss + lam_contact * (ground_pen + skate)
+        loss.backward(); opt.step()
+    beta = beta.detach(); s = float(torch.exp(log_s).detach()); delta = delta.detach()
+    return pose.detach(), trans.detach(), beta, s, delta
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # §P15 — Damped-Gauss-Newton reduced-coordinate pose solver.
 #
