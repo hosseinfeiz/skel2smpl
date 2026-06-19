@@ -711,6 +711,50 @@ def solve_pose(obs_joints, init_pose, smpl_model, Q, betas=None, scale=1.0,
     return (pose.detach(), delta.detach()) if return_offsets else pose.detach()
 
 
+# Torso-core bones used to seed the per-frame ROOT orientation (Kabsch). Ordered most→least
+# root-rigid: pelvis + its direct children (hips, spine1) are rigid to the root BY CONSTRUCTION
+# (a joint centre's position depends only on its PARENT chain, not its own rotation); spine2/3,
+# neck, head, shoulders are added so sparse-marker sets (ExPI: only pelvis+back+head+shoulders)
+# still span 3 dimensions. One mean point per present bone (collapses ExPI's two hip markers).
+_ROOT_CORE = (0, 1, 2, 3, 6, 9, 12, 15, 16, 17)
+
+
+def _kabsch_so3(A, B):
+    """Per-frame rotation R [T,3,3] minimizing ‖B − R·A‖² (centroid-removed, SVD/Procrustes).
+    A [K,3] frame-invariant reference points; B [T,K,3] observed. Scale-free (rotation only)."""
+    A0 = A - A.mean(0, keepdim=True)                       # [K,3]
+    B0 = B - B.mean(1, keepdim=True)                       # [T,K,3]
+    H = torch.einsum("ki,tkj->tij", A0, B0)                # [T,3,3]  Σ A0 B0ᵀ
+    U, S, Vh = torch.linalg.svd(H)
+    V = Vh.transpose(-1, -2)
+    Ut = U.transpose(-1, -2)
+    d = torch.det(V @ Ut)                                  # [T] reflection guard
+    D = torch.eye(3, dtype=A.dtype).expand(B0.shape[0], 3, 3).clone()
+    D[:, 2, 2] = d
+    return V @ D @ Ut                                      # [T,3,3]  B0 ≈ R·A0
+
+
+def _root_init_kabsch(obs, mb, Jrest, QM):
+    """Per-frame LOCAL root axis-angle [T,3] seeding the global body orientation from the data.
+
+    The marker objective has a degeneracy: a body turn can be matched by rotating the ROOT or by
+    twisting the spine/hips/shoulders. From a zero-init root, Adam falls into the twist minimum on
+    turning/acrobatic frames → an erratically-spinning root + a contorted torso (ReMoCap reactor:
+    59 mm, root flailing 9–134° while GT yaw ≈ 0). MoSh/SMPLify seed the per-frame global rotation
+    by a rigid fit to the torso markers first; we Kabsch the present `_ROOT_CORE` bones' rest joint
+    centres (native) onto their observed marker means (proper), giving R = QM·R₀ ⇒ R₀ = QMᵀ·R.
+    Returns zeros if fewer than 3 core bones are observed (then the caller keeps the zero init)."""
+    bones = [b for b in _ROOT_CORE if (mb == b).any()]
+    if len(bones) < 3:
+        return torch.zeros(obs.shape[0], 3, dtype=obs.dtype)
+    A = torch.stack([Jrest[b] for b in bones])             # [K,3] native rest joint per core bone
+    B = torch.stack([obs[:, (mb == b).nonzero(as_tuple=True)[0]].mean(1)
+                     for b in bones], dim=1)               # [T,K,3] observed mean per core bone
+    R = _kabsch_so3(A, B)                                   # [T,3,3] ≈ QM·R₀
+    R0 = QM.transpose(-1, -2) @ R                           # back out the native→proper map
+    return log_so3(R0)
+
+
 def fit_markers(obs_markers, marker_bone, smpl_model, Q, betas_init=None,
                 bone_scale=None, n_shape_frames: int = 12,
                 iters_shape: int = 500, iters_pose: int = 500, lr: float = 0.02,
@@ -810,7 +854,13 @@ def fit_markers(obs_markers, marker_bone, smpl_model, Q, betas_init=None,
             else torch.as_tensor(betas_init, dtype=dt).clone()).requires_grad_(True)
     log_s = torch.zeros((), dtype=dt, requires_grad=True)        # s = exp(log_s) > 0
     delta = torch.zeros(M, 3, dtype=dt, requires_grad=True)
-    pose = torch.zeros(T, N_JOINTS, 3, dtype=dt, requires_grad=True)
+    # Seed the per-frame ROOT orientation from a rigid (Kabsch) fit to the torso markers, so the
+    # body turn lands in the root and not in a contorted spine/limb twist (the ReMoCap-reactor
+    # spinning-root bug). Other joints start at rest; β/s/δ at zero. MoSh/SMPLify global-orient init.
+    Jrest = _rest_joints_native(smpl_model, None, bone_scale, N_JOINTS).to(dt)
+    pose0 = torch.zeros(T, N_JOINTS, 3, dtype=dt)
+    pose0[:, 0] = _root_init_kabsch(obs, mb, Jrest, QM)
+    pose = pose0.clone().requires_grad_(True)
     trans = root0.clone().requires_grad_(True)
     contact, floor = detect_contacts(obs) if lam_contact > 0 else (None, None)
     cm = contact.to(dt) if contact is not None else None

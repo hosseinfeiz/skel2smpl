@@ -1404,6 +1404,22 @@ not this fitting module. Cross-refs to §P8 below point back to that plan.
   ~0°, spine markers follow. RESULT (render-verified all 4 datasets, 2026-06-19): ankle 20-37°→0.1°, feet
   FLAT/planted (no more ballet-pointe); spine3 now articulates 23° (was locked). Fit numbers improved or held:
   ninjutsu 16/13, lindyhop 12/12 (was ~18), 2c 12/11 (was 14/17), expi 27/23 (= baseline, no regression).
+- **ROOT-ORIENTATION INIT AMENDMENT (2026-06-19, user "ninjutsu still creating rotating root … elbow not
+  fitted at all, probably related to the rotating root").** The marker objective has a GAUGE DEGENERACY: a
+  body turn can be matched by rotating the ROOT joint OR by twisting the spine/hips/shoulders. From a
+  ZERO-init root, Adam falls into the twist minimum on turning/acrobatic frames. Probe (shot_007 reactor,
+  `scratch`): GT yaw ≈ 0 early but the fitted root local angle flailed 9–134° erratically; mean 59.5 mm, peak
+  136 mm; render = a grotesquely back-bent torso with the GT skeleton far off the mesh ("elbow not fitted" =
+  the whole upper chain is twisted to absorb the global turn). The actor (mild motion) tracked fine, which is
+  why static shot_001 looked correct — the bug only bites on real rotation. FIX (MoSh/SMPLify global-orient
+  init, landed `fit.py::_root_init_kabsch`): seed `pose[:,0]` per-frame by a rigid Procrustes/Kabsch fit of the
+  observed torso markers to the SMPL rest torso joints (core bones `_ROOT_CORE={0,1,2,3,6,9,12,15,16,17}`,
+  one mean point per present bone — pelvis+hips+spine1 are rigid to the root by construction; spine2/3+neck+
+  head+shoulders span the 3rd dim for sparse sets like ExPI). `R = QM·R₀ ⇒ R₀ = QMᵀ·R`. Other joints/β/s/δ
+  still start at zero. RESULT (render-verified): reactor 59.5→18.8 mm (peak 136→28.7), root holds a coherent
+  orientation tracking the turn (no spin), frame-130 contortion → a natural lunge (17/49→17/18 mm). No
+  regression: 2C 12/11, ExPI 27/24, ninjutsu static 16/13. *Lesson: a low PER-MARKER residual can coexist with
+  a globally-wrong body when a degeneracy lets the limbs absorb the global DOF — the data-driven init breaks it.*
 - **§P23.v — SURFACE-VERTEX MARKER ATTACH (user AskUserQuestion 2026-06-18: "surface-vertex marker attach").**
   DESIGN (not yet implemented — next session). The free joint-offset δ confounds β (verified: relaxing
   `lam_beta` 1.0→0.02 leaves ‖β‖≈0.1, markers absorbed by δ ⇒ β never moves). MoSh-strict fix: each marker m
