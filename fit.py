@@ -716,7 +716,7 @@ def fit_markers(obs_markers, marker_bone, smpl_model, Q, betas_init=None,
                 iters_shape: int = 500, iters_pose: int = 500, lr: float = 0.02,
                 lam_smooth: float = 0.10, lam_delta: float = 0.02,
                 lam_beta: float = 1.0, lam_contact: float = 0.0,
-                lam_anchor: float = 0.5, lam_limit: float = 1.0,
+                lam_anchor: float = 0.5, lam_limit: float = 1.0, lam_s: float = 2.0,
                 sigma_sq: float = 0.5, sigma_sq0: float = 0.5):
     """§P23 — true-MoSh surface-marker SMPL solve for a joint-INCONGRUENT reference.
 
@@ -809,7 +809,7 @@ def fit_markers(obs_markers, marker_bone, smpl_model, Q, betas_init=None,
         v, body = markers_of(pose, trans, torch.exp(log_s), beta, delta)
         loss = (data_term(v, _sig(i, n_it)) + lam_smooth * smooth_term(pose, T)
                 + lam_beta * (beta ** 2).mean() + lam_delta * (delta ** 2).sum()
-                + (aw * (pose ** 2).sum(-1)).mean())
+                + (aw * (pose ** 2).sum(-1)).mean() + lam_s * log_s ** 2)
         if lam_limit > 0:
             loss = loss + lam_limit * _limit_residual(pose, _lim_axes, _lim_ax, _lim_lo, _lim_hi)
         if lam_contact > 0:
