@@ -32,9 +32,7 @@ import torch
 from skel2smpl.smpl import SMPL
 from skel2smpl.fit import (solve_shape, solve_pose, forward_proper, fit_markers,
                            resample_spine_targets, measure_bone_ratios, _fk)
-from skel2smpl.adapters import bvh_to_smpl_world_rotations, compute_Q
 from skel2smpl.constants import _RX_NEG90, N_JOINTS, SMPL_PARENTS, JOINT_NAMES
-from skel2smpl.geometry import rotation_matrix_to_axis_angle
 from skel2smpl import skeletons as sk
 
 RXP = _RX_NEG90.t().double()                 # SMPL native (Y-up) -> Z-up
@@ -52,15 +50,6 @@ def _smpl():
     if _SMPL_CACHE is None:
         _SMPL_CACHE = SMPL()
     return _SMPL_CACHE
-
-
-def _world_to_local_aa(Rw):
-    """[T,22,3,3] SMPL-native WORLD rotations -> [T,22,3] LOCAL axis-angle (root local=world)."""
-    T = Rw.shape[0]
-    Rl = torch.eye(3, dtype=torch.float64).repeat(T, N_JOINTS, 1, 1)
-    for j in range(N_JOINTS):
-        Rl[:, j] = Rw[:, j] if PAR[j] < 0 else Rw[:, PAR[j]].transpose(-1, -2) @ Rw[:, j]
-    return rotation_matrix_to_axis_angle(Rl.reshape(-1, 3, 3)).reshape(T, N_JOINTS, 3)
 
 
 # ═══════════════════════ generic solvers (any obs) ═══════════════════════
@@ -236,29 +225,6 @@ def _obs_remocap(csv_path, nf):
     return obs, w
 
 
-def _fit_remocap(wp_path, nf):
-    """ReMoCap SMPL body: MoSh position fit MATCHING the worldpos GT, initialized from the exact
-    BVH rotations (correct twist) when *_rotations.csv/_offsets.pkl are present. resample_spine_targets
-    fixes the 5-spine->3-spine torso-lean. Returns (joints, verts, faces, err) Y-up, or None if the
-    BVH/rotations/offsets are absent (caller falls back to zero-init position fit)."""
-    base = wp_path[:-len("_worldpos.csv")]
-    bvh, rot, off = base + ".bvh", base + "_rotations.csv", base + "_offsets.pkl"
-    if not (os.path.exists(bvh) and os.path.exists(rot) and os.path.exists(off)):
-        return None
-    smpl = _smpl()
-    pose0 = _world_to_local_aa(bvh_to_smpl_world_rotations(bvh, rot, off, smpl)[:nf])
-    Q = compute_Q(bvh, off, smpl)                                  # honors the Mixamo rest M
-    T = pose0.shape[0]
-    obs, w = _obs_remocap(wp_path, nf); obs = obs[:T]
-    obsZ = torch.einsum("mn,tjn->tjm", RXP, obs)                   # native Y-up -> Z-up proper
-    jp, vp, faces, _ = fit_smpl(obsZ, w, pose0=pose0, lam_contact=8.0, Q=Q)
-    RY = _RX_NEG90.float()                                          # proper Z-up -> Y-up native
-    jp = torch.einsum("mn,tjn->tjm", RY, jp)
-    vp = torch.einsum("mn,tvn->tvm", RY, vp)
-    err = (jp[:, w > 0.5] - obs[:, w > 0.5].float()).norm(dim=-1).mean().item() * 1000.0
-    return jp, vp, faces, err
-
-
 def remocap_csvs(seq_dir):
     """ReMoCap dyad layout -> (actor_worldpos.csv, reactor_worldpos.csv)."""
     flat0 = os.path.join(seq_dir, "0_worldpos.csv")
@@ -268,18 +234,32 @@ def remocap_csvs(seq_dir):
             os.path.join(seq_dir, "1", "motion_worldpos.csv"))
 
 
+# marker-pair -> SMPL long bone (child) for the §P14 length retarget (SMPL joint indices;
+# markers ARE joint centres so segments == bone lengths). Limbs only (feet excluded).
+REMO_BONE_SEG = {4: (1, 4), 7: (4, 7), 5: (2, 5), 8: (5, 8),
+                 18: (16, 18), 20: (18, 20), 19: (17, 19), 21: (19, 21)}
+
+
+def _remo_edges(obsv):
+    """SMPL parent-child edges among the observed joints (marker-array indices)."""
+    pos = {int(j): k for k, j in enumerate(obsv.tolist())}
+    return [(pos[PAR[int(j)]], pos[int(j)]) for j in obsv.tolist()
+            if PAR[int(j)] >= 0 and PAR[int(j)] in pos]
+
+
 def fit_remocap(worldpos_csv, max_frames=200):
-    """Fit one ReMoCap performer (LindyHop / Ninjutsu): BVH-rotation init when available,
-    else zero-init position fit to the 22-joint worldpos GT."""
-    res = _fit_remocap(worldpos_csv, max_frames)
-    if res is not None:
-        jp, vp, faces, err = res
-        gt = _obs_remocap(worldpos_csv, max_frames)[0][:jp.shape[0]].float()
-    else:
-        obs, w = _obs_remocap(worldpos_csv, max_frames)
-        jp, vp, faces, err = fit_smpl(obs, w, lam_contact=8.0)
-        gt = obs.float()
-    return Fit(jp, vp, faces, err, gt, sk.smpl22_edges())
+    """Fit one ReMoCap performer (LindyHop / Ninjutsu) with the ExPI true-MoSh marker solve:
+    the 22 worldpos joint centres are markers attached to their own SMPL bones (§P23)."""
+    obs, w = _obs_remocap(worldpos_csv, max_frames)
+    obsv = torch.where(w > 0.5)[0]                                # observed SMPL joints
+    pos = {int(j): k for k, j in enumerate(obsv.tolist())}
+    markers = obs[:, obsv]
+    marker_bone = obsv.clone().long()
+    bone_seg = {c: (pos[a], pos[b]) for c, (a, b) in REMO_BONE_SEG.items()
+                if a in pos and b in pos}
+    bs = marker_bone_scale(markers, bone_seg) if bone_seg else None
+    jp, vp, faces, err, _ = fit_smpl_markers(markers, marker_bone, bone_scale=bs)
+    return Fit(jp, vp, faces, err, markers.float(), _remo_edges(obsv))
 
 
 # ═══════════════════════ registry ═══════════════════════

@@ -1347,6 +1347,14 @@ not this fitting module. Cross-refs to §P8 below point back to that plan.
   offset, torso anchor, joint limits, `C2_BONE_SEG` length retarget). Render-verified clean upright boxers,
   fit 25→**14/17 mm**; orphaned `_obs_2c`/`_pose0_2c`/`_bvh_world_rots` deleted. `bone_scale` helper
   generalized to `marker_bone_scale(markers, bone_seg)`; ExPI bit-identical (25 mm).
+  **ReMoCap (LindyHop + Ninjutsu) DONE (2026-06-19, user "use the same algorithm for ninjutsu and lindyhop"):**
+  `fit_remocap` likewise rewritten — the 22 worldpos joint CENTRES become markers attached to their own SMPL
+  bones (`marker_bone = observed SMPL indices`, `REMO_BONE_SEG` limb retarget) and fit by `fit_markers`
+  (Y-up, no Z-up/compute_Q dance). Render-verified clean upright dancers/fighters, ~18 mm. The whole
+  BVH-rotation-init path is gone: `_fit_remocap`, `_world_to_local_aa`, and the `adapters`
+  (`bvh_to_smpl_world_rotations`/`compute_Q`) + `geometry` imports deleted. **All 4 fittable datasets
+  (2C, ExPI, LindyHop, Ninjutsu) now share ONE solver — `fit_markers`.** (`fit_smpl`, the generic 22-joint
+  position fit, stays as public API but is no longer any dataset's default path.)
 - **SHAPE-REG AMENDMENT (2026-06-18, user "fitted shape completely wrong, regularize the shape").** Render
   (not metric) caught it: marker err 13 mm but the follower mesh was a BLOATED, POT-BELLIED, HUNCHED body.
   β was already ≈0 (not the cause) — the culprit was POSE: no marker hits spine1/2/3, neck or collars, so

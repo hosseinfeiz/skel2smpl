@@ -18,7 +18,7 @@ from skel2smpl.datasets import (
     fit_2c, fit_expi, fit_remocap, fit_dataset, fit_smpl, fit_smpl_markers,
     Fit, DATASETS, marker_bone_scale, remocap_csvs, SMPL_NAME,
     C2_MAP, C2_MARKERS, C2_MARKER_BONE, C2_BONE_SEG, C2_MARKER_EDGES,
-    EXPI_MARKERS, EXPI_BONE, EXPI_BONE_SEG, EXPI_EDGES, REMO_NAME,
+    EXPI_MARKERS, EXPI_BONE, EXPI_BONE_SEG, EXPI_EDGES, REMO_NAME, REMO_BONE_SEG,
 )
 from skel2smpl.smpl import SMPL
 from skel2smpl.fit import (
@@ -73,6 +73,7 @@ __all__ = [
     "EXPI_BONE_SEG",
     "EXPI_EDGES",
     "REMO_NAME",
+    "REMO_BONE_SEG",
     "SMPL_NAME",
     "remocap_csvs",
 ]
