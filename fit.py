@@ -750,12 +750,24 @@ def fit_markers(obs_markers, marker_bone, smpl_model, Q, betas_init=None,
     sw[_TORSO] = 3.0; sw[_LEGS] = 3.0; sw[_FEET] = 3.0
     sw[0] = 1.0          # root carries REAL global rotation (not jitter) — don't over-smooth;
                          # the lateral hip markers (attached to the pelvis) lag if it is (§P23)
-    # No marker hits the spine1/2/3, neck or collars, so those joints are FREE to curl into an
-    # implausible torso (the §P23 pot-belly/hunch) that still satisfies the sparse markers.
-    # Anchor THEM to rest (straight spine) — strong where unconstrained, zero on the
-    # marker-pinned limbs/head/root. Plus §P17 anatomical joint limits keep every joint in ROM.
+    # Rest-pose anchors that keep the mesh PLAUSIBLE where the markers don't (the §P23
+    # "low residual ≠ right body" rule). Two kinds, both at lam_anchor:
+    #  (1) Torso joints {spine1/2/3, neck, collars} ONLY WHEN NO marker is attached to them.
+    #      For ExPI there is no spine/neck/collar marker, so they curl into a pot-belly/hunch
+    #      that still satisfies the sparse markers → anchor straight. But ReMoCap DOES observe
+    #      spine1/2/3+neck+collar markers; anchoring those to rest fights the data (50 mm spine
+    #      residual) AND locks the torso straight so the body can only follow its orientation by
+    #      rotating RIGIDLY about the root (the "mesh spins around its root" bug). So skip any
+    #      torso joint that has a marker — let the spine articulate to its own markers.
+    #  (2) Feet {ankles 7,8 + toe joints 10,11} ALWAYS. A surface heel/toe marker (or the short
+    #      SMPL ankle→ball bone vs the longer marker span) drives the ankle to over-plantarflex
+    #      and twist into a pointed "alien"/ballet-pointe foot — a low-residual but wrong mesh.
+    #      Anchoring the feet to rest keeps a flat, human foot; the toe marker is still reached
+    #      in POSITION by the leg/root, just not by curling the foot. (§P17 limits keep ROM too.)
+    marker_joints = {int(b) for b in mb.tolist()}
     aw = torch.zeros(N_JOINTS, dtype=dt)
-    aw[[3, 6, 9, 12, 13, 14]] = lam_anchor
+    aw[[j for j in (3, 6, 9, 12, 13, 14) if j not in marker_joints]] = lam_anchor
+    aw[_FEET] = lam_anchor
     if lam_limit > 0:
         _lim_axes, _lim_ax, _lim_lo, _lim_hi = smpl_joint_limits(smpl_model, None, bone_scale)
 

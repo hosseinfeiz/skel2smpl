@@ -1387,6 +1387,23 @@ not this fitting module. Cross-refs to §P8 below point back to that plan.
   extreme bone_scale tears the mesh). Render-verified `/tmp/feet_fix.png`: feet normal, bodies plausible,
   marker mean 26/22 mm. This is a STOPGAP — the proper proportion+girth solution is §P23.v (surface-vertex
   attach), where β + pose explain the markers and NO bone-tearing retarget is needed.
+- **MARKER-AWARE ANCHOR AMENDMENT (2026-06-19, user "ninjutsu mesh rotating around root ... optimization is
+  wrong" + "feet ... overfitted ... should be straight like human feet").** The §P23 SHAPE-REG anchor was
+  HARDCODED to the ExPI torso set {3,6,9,12,13,14}. Two bugs surfaced on ReMoCap (probe `scratch_*`, render):
+  (1) **rotating-around-root / stiff torso.** ReMoCap OBSERVES markers on spine1/2/3+neck+collars (all of
+  {3,6,9,12,13,14}); anchoring those to REST fought the real spine markers (spine3 50, spine1 44, pelvis 36 mm)
+  AND locked the torso straight, so the body could only follow its orientation by rotating RIGIDLY about the
+  root (the "mesh spins around its root" look). FIX: anchor a torso joint to rest ONLY when NO marker attaches
+  to it (`j not in {marker_bone}`) — ExPI still anchors its marker-free spine/neck/collars; ReMoCap lets the
+  spine articulate to its own markers. (2) **pointed/alien feet (all datasets).** The ankle over-plantarflexed
+  & twisted to chase the surface heel/toe marker (probe: R-ankle 37° incl. 25° twist) → ballet-pointe feet
+  (render, both performers). FIX: ALWAYS anchor the feet `_FEET={7,8,10,11}` to rest (`lam_anchor`) — flat
+  human foot; the toe marker is still reached in POSITION by the leg/root, not by curling the foot (§P17 limits
+  alone did not catch it — 37° is inside ROM). Both changes are two lines at `fit.py:fit_markers` (the `aw`
+  set); GMOF/bone_scale/limits untouched. Gate: ReMoCap render shows articulating spine + flat feet; ankle rot
+  ~0°, spine markers follow. RESULT (render-verified all 4 datasets, 2026-06-19): ankle 20-37°→0.1°, feet
+  FLAT/planted (no more ballet-pointe); spine3 now articulates 23° (was locked). Fit numbers improved or held:
+  ninjutsu 16/13, lindyhop 12/12 (was ~18), 2c 12/11 (was 14/17), expi 27/23 (= baseline, no regression).
 - **§P23.v — SURFACE-VERTEX MARKER ATTACH (user AskUserQuestion 2026-06-18: "surface-vertex marker attach").**
   DESIGN (not yet implemented — next session). The free joint-offset δ confounds β (verified: relaxing
   `lam_beta` 1.0→0.02 leaves ‖β‖≈0.1, markers absorbed by δ ⇒ β never moves). MoSh-strict fix: each marker m
