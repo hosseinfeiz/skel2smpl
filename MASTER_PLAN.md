@@ -1467,6 +1467,54 @@ not this fitting module. Cross-refs to §P8 below point back to that plan.
 - **Reversible:** the MoSh path is additive (`fit_markers` new in `skel2smpl/fit.py`; `_markers_expi`/
   `fit_smpl_markers` new in `vizsys/smpl_fit.py`). Old `_obs_expi`+`fit_smpl` stays; revert = re-route ExPI.
 
+### P24 — Offline conversion of the four datasets to boxing-format SMPL XML [makes skel2smpl runtime-free] (2026-06-19)
+- **Why (user, 2026-06-19): "create SMPL format for all the datasets; after that we don't need skel2smpl
+  anywhere — it is just like having the boxing dataset for all the pipelines."** Today 2C/ExPI/LindyHop/
+  Ninjutsu are fit to SMPL by `fit_markers` AT RUNTIME on every viz. Boxing instead ships a precomputed
+  `optimization/smpl.xml` (β + per-frame SMPL pose + trans) that every pipeline just LOADS. Give the four the
+  SAME file so `skel2smpl` becomes a one-time OFFLINE conversion tool, never a runtime dependency.
+- **Target format — the EXACT boxing schema** (verified `pose_estimation/viz.py::smpl_xml_payload`, the loader
+  reused UNCHANGED): `<mocap shape_0="β0..9" shape_1="β0..9">` then per keyframe
+  `<key personID poses="tx ty tz | gx gy gz | body_pose(69)" triangulated="…GT markers…"/>`. `poses`=75=
+  trans(3)+global_orient(3)+body_pose(23×3); rebuilt by plain `SMPL.forward(aa[24,3], trans, β)` — NO
+  bone_scale, NO scale field. `triangulated` carries the observed GT markers for the translucent overlay.
+- **Frame contract (the de-risk — why a plain `SMPL.forward` reproduces the fit).** `SMPL.forward_R` returns
+  `M·(FK+trans)` with `M=_TRANS=Rx(−90)` (`smpl.py:166`). `forward_proper` (the fit's render) post-rotates by
+  `Q=RXP=Rx(+90)`, and **Q·M=I**, so forward_proper = native FK placed at `root_target`, then uniform `s`
+  about the root (`fit.py:174-214`). Therefore, fitting with **`bone_scale=None` and `s=1`** the EXPORT is
+  EXACT: `aa_box=[pose(22), 0, 0]` (global_orient = `pose[:,0]`), `trans_box = trans − FK_root_native`
+  (FK_root_native = `Mᵀ·forward_R(exp(pose),0,β).joints[:,0]`), `β=β`. Then the boxing loader's
+  `forward(aa_box,trans_box,β) = M·(forward_proper body)` to float precision (gate G24a).
+- **Plain-SMPL config + the one tradeoff.** boxing β+θ CANNOT express the §P14 per-bone `bone_scale` (limb
+  LENGTH) nor the uniform `s` (SIZE). So the conversion calls `fit_markers` with `bone_scale=None`, `lam_s`
+  high (pin s≈1), and a LOW `lam_beta` so β absorbs what size it can (ExPI keeps the §P23.v `marker_vert`
+  vertex-attach → β identifiable). CONSEQUENCE (the settled invariant, §P23/§P9): for the three JOINT-centre
+  datasets (2C/LindyHop/Ninjutsu) β cannot recover the subjects' 1.2–1.5× differential limb lengths → the
+  plain-SMPL body may read GENERIC vs the bone_scale fit. ExPI is fine (surface markers → β). Verified by
+  RENDER (G24c), not the mm number alone (CLAUDE.md "RENDER the mesh").
+- **Edits:** NEW `skel2smpl/to_boxing_xml.py` — per-dataset marker load (reuse `datasets.py`
+  `_markers_2c/_markers_expi/_obs_remocap` + `C2_*/EXPI_*/REMO_*`) → `fit_markers(plain config)` → the frame
+  map above → write the boxing XML; CLI `--dataset --seq --max-frames --out` + an `--all --data-root` driver.
+  `fit_markers` is UNCHANGED (called with explicit kwargs; koopman's live use keeps its defaults). The Phase-3
+  cutover (`vizsys/smpl_fit.py` loads the XML instead of fitting) lives in the vr/vizsys repos.
+- **Output:** `smpl.xml` next to each sequence's source under `data/` (mirrors boxing
+  `<session>/optimization/smpl.xml`): `data/Datasets/2C/<action>/<clip>_smpl.xml`,
+  `data/Datasets/ExPI/<acro>/<clip>/smpl.xml`, `data/Ninjutsu/…/<shot>/smpl.xml`, `data/LindyHop/…/<seq>/smpl.xml`.
+- **Gates:**
+  - **G24a (frame round-trip):** for each pilot performer, `smpl_xml_payload(written).verts` ==
+    `forward_proper(pose, RXP, β, scale=1, root_target=trans, bone_scale=None).verts` to **< 1e-3 m**.
+  - **G24b (schema drop-in):** the written XML parses + renders through the UNCHANGED
+    `pose_estimation/viz.py::smpl_xml_payload` (boxing-compatible).
+  - **G24c (pilot render, USER gate):** 1 seq/dataset × 500 frames, full-res snapshot per dataset — bodies
+    upright/plausible, GT (triangulated) overlays the mesh. User reviews whether plain-SMPL limbs are
+    acceptable for 2C/LindyHop/Ninjutsu BEFORE the full run.
+  - **G24d (cutover):** `viz.py {2c,expi,lindyhop,ninjutsu} --smpl` renders from the XML with NO `skel2smpl`
+    import on the runtime path (grep-verified).
+- **Reversible:** additive — new file + new XMLs; the live `fit_*` path stays until G24d is verified; revert =
+  re-point `smpl_fit_payload` to the fit. If G24c rejects plain-SMPL, the minimal off-ramp is an OPTIONAL
+  `bone_scale_N` attr read by the shared loader (`SMPL.forward` ALREADY accepts `bone_scale`, `smpl.py:120`;
+  boxing files lack it → None → unchanged) — still one boxing-compatible loader, but limb-exact.
+
 ### P10 — MoSh++ SMPL POSE fit (β=0 standard body), the correct mesh path [SUPERSEDED by P11]
 - **Decision (user, 2026-06-13):** P9's whole premise — fitting SMPL *shape* β so its
   joints land on the Ninjutsu joints — is "fitting the SMPL mesh on a different
