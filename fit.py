@@ -802,7 +802,7 @@ def fit_markers(obs_markers, marker_bone, smpl_model, Q, betas_init=None,
                 lam_smooth: float = 0.10, lam_delta: float = 0.02,
                 lam_beta: float = 1.0, lam_contact: float = 0.0,
                 lam_anchor: float = 0.5, lam_limit: float = 1.0, lam_s: float = 2.0,
-                lam_vp: float = 2e-4, marker_vert=None,
+                lam_vp: float = 2e-4, marker_vert=None, fit_beta: bool = True,
                 sigma_sq: float = 0.5, sigma_sq0: float = 0.5):
     """§P23 — true-MoSh surface-marker SMPL solve for a joint-INCONGRUENT reference.
 
@@ -908,7 +908,7 @@ def fit_markers(obs_markers, marker_bone, smpl_model, Q, betas_init=None,
     # (hip/back/head) under-determined (spine/pelvis gauge freedom) and does NOT generalize
     # (§P23: frozen-δ gave 200 mm hip residuals). All frames removes that gap.
     beta = (torch.zeros(nb, dtype=dt) if betas_init is None
-            else torch.as_tensor(betas_init, dtype=dt).clone()).requires_grad_(True)
+            else torch.as_tensor(betas_init, dtype=dt).clone()).requires_grad_(fit_beta)
     log_s = torch.zeros((), dtype=dt, requires_grad=True)        # s = exp(log_s) > 0
     delta = torch.zeros(M, 3, dtype=dt, requires_grad=True)
     # Seed the per-frame ROOT orientation from a rigid (Kabsch) fit to the torso markers, so the
@@ -933,7 +933,7 @@ def fit_markers(obs_markers, marker_bone, smpl_model, Q, betas_init=None,
         except Exception:
             use_vp = False
     n_it = iters_shape + iters_pose
-    opt = torch.optim.Adam([beta, log_s, delta, pose, trans], lr=lr)
+    opt = torch.optim.Adam(([beta] if fit_beta else []) + [log_s, delta, pose, trans], lr=lr)
     for i in range(n_it):
         opt.zero_grad()
         v, body = markers_of(pose, trans, torch.exp(log_s), beta, delta)

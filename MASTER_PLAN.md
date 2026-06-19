@@ -1514,6 +1514,17 @@ not this fitting module. Cross-refs to §P8 below point back to that plan.
   re-point `smpl_fit_payload` to the fit. If G24c rejects plain-SMPL, the minimal off-ramp is an OPTIONAL
   `bone_scale_N` attr read by the shared loader (`SMPL.forward` ALREADY accepts `bone_scale`, `smpl.py:120`;
   boxing files lack it → None → unchanged) — still one boxing-compatible loader, but limb-exact.
+- **DECISION (user, 2026-06-19): PURE plain SMPL — exact boxing schema, NO bone_scale, NO loader change.**
+  The shared `smpl_xml_payload` stays byte-for-byte upstream. β is estimated by the EasyMocap
+  `optimizeShape` (skel2smpl `fit_smpl_betas_limblen`, β-only, no scale — the method the user named in
+  `pose_estimation/kinematics/optimization.py:785`), then FROZEN while the pose is solved
+  (`fit_markers(fit_beta=False, bone_scale=None, lam_s=1e4)` — new `fit_beta` freeze flag). ExPI keeps the
+  §P23.v surface-vertex β path (β identifiable). MEASURED (ninjutsu shot_001, 200f): marker err **47/36 mm**,
+  **‖β‖ 1.9/1.6 (in-distribution, not blobby)**, s=1.000, **G24a 0.0024 mm** (exact frame round-trip);
+  rendered via the UNCHANGED boxing loader → clean plausible bodies. TRADEOFF (measured, accepted): β cannot
+  carry the subjects' differential limb lengths from joint markers — upper arms ~21–28% short vs the
+  bone_scale fit (~16 mm); the §P9 ceiling. The bone_scale off-ramp above stays the documented fallback if a
+  full-res render review rejects the plain-SMPL limbs. Tool: `skel2smpl/to_boxing_xml.py`.
 
 ### P10 — MoSh++ SMPL POSE fit (β=0 standard body), the correct mesh path [SUPERSEDED by P11]
 - **Decision (user, 2026-06-13):** P9's whole premise — fitting SMPL *shape* β so its
