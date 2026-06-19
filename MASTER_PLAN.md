@@ -1341,8 +1341,12 @@ not this fitting module. Cross-refs to §P8 below point back to that plan.
   `sigma_sq0==sigma_sq`. (2) hip iliac-crest markers attach to the PELVIS (bone 0), NOT the femur joint
   (1/2) — else they swing with the thigh on leg-lift; and the 12-frame MoSh++ Stage-I FREEZE under-determines
   the torso δ (gauge freedom) ⇒ solve ONE joint pass over ALL frames (δ frame-invariant, estimated from the
-  whole sequence). **NEXT: 2C** (the milder rotational-BVH case; reuse `fit_markers` with a 2C bone map, or
-  the existing rotation-init path + the back→spine3 correspondence fix).
+  whole sequence). **2C DONE (2026-06-19, user "use the expi fitting algorithm for 2C"):** the old
+  BVH-rotation-init `fit_smpl` path was replaced — the 20 2C BVH joint centres are now treated as MARKERS
+  (`C2_MARKERS`/`C2_MARKER_BONE`) and fit with the SAME `fit_markers` solve (graduated-σ from zero, free
+  offset, torso anchor, joint limits, `C2_BONE_SEG` length retarget). Render-verified clean upright boxers,
+  fit 25→**14/17 mm**; orphaned `_obs_2c`/`_pose0_2c`/`_bvh_world_rots` deleted. `bone_scale` helper
+  generalized to `marker_bone_scale(markers, bone_seg)`; ExPI bit-identical (25 mm).
 - **SHAPE-REG AMENDMENT (2026-06-18, user "fitted shape completely wrong, regularize the shape").** Render
   (not metric) caught it: marker err 13 mm but the follower mesh was a BLOATED, POT-BELLIED, HUNCHED body.
   β was already ≈0 (not the cause) — the culprit was POSE: no marker hits spine1/2/3, neck or collars, so

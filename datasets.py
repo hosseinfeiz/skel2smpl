@@ -28,14 +28,12 @@ from collections import namedtuple
 
 import numpy as np
 import torch
-import torch.nn.functional as Fn
 
 from skel2smpl.smpl import SMPL
 from skel2smpl.fit import (solve_shape, solve_pose, forward_proper, fit_markers,
                            resample_spine_targets, measure_bone_ratios, _fk)
 from skel2smpl.adapters import bvh_to_smpl_world_rotations, compute_Q
-from skel2smpl.constants import (_RX_NEG90, N_JOINTS, SMPL_PARENTS,
-                                 SMPL22_PRIMARY_CHILD, JOINT_NAMES)
+from skel2smpl.constants import _RX_NEG90, N_JOINTS, SMPL_PARENTS, JOINT_NAMES
 from skel2smpl.geometry import rotation_matrix_to_axis_angle
 from skel2smpl import skeletons as sk
 
@@ -112,84 +110,57 @@ def fit_smpl_markers(obs_markers, marker_bone, lam_contact=0.0, bone_scale=None)
     return jp.float(), vp.float(), smpl.faces, err, vm.float()
 
 
+def marker_bone_scale(markers, bone_seg, clamp=(0.85, 1.30)):
+    """Per-bone length ratios from marker segments -> bone_scale [24] (§P14), clamped.
+    `bone_seg` maps SMPL child joint -> (markerA_idx, markerB_idx) that bracket the bone."""
+    smpl = _smpl()
+    J = (smpl.J_regressor @ smpl.v_template)[:N_JOINTS].double()
+    bs = torch.ones(24, dtype=torch.float64)
+    for c, (a, b) in bone_seg.items():
+        Lm = (markers[:, a] - markers[:, b]).norm(dim=-1).mean()
+        Ls = (J[c] - J[PAR[c]]).norm()
+        bs[c] = float((Lm / Ls).clamp(*clamp))
+    return bs
+
+
 # ═══════════════════════ 2C — boxing BVH (20 joints, rotational) ═══════════════════════
+# The 2C skeleton's joint centres are treated as MARKERS attached to SMPL bones and fit with
+# the SAME true-MoSh solve as ExPI (graduated-σ from zero, free per-marker offset, torso anchor,
+# joint limits, per-bone retarget) — more robust than the old BVH-rotation-init position fit.
 C2_MAP = {"Hips": 0, "Spine": 3, "Spine1": 6, "HEad": 15, "LeftShoulder1": 13,
           "LeftArm": 16, "LeftForeArm": 18, "LeftHand": 20, "RightShoulder": 14,
           "RightArm": 17, "RightForeArm": 19, "RightHand": 21, "LeftUpLeg": 1,
           "LeftLeg": 4, "LeftFoot": 7, "LeftToes": 10, "RightUpLeg": 2,
           "RightLeg": 5, "RightFoot": 8, "RightToes": 11}
-_C2_NAME = {SMPL_NAME[j]: nm for nm, j in C2_MAP.items()}
+# fixed marker order (20 BVH joints) + the SMPL bone each attaches to.
+C2_MARKERS = ("Hips", "Spine", "Spine1", "HEad", "LeftShoulder1", "LeftArm", "LeftForeArm",
+              "LeftHand", "RightShoulder", "RightArm", "RightForeArm", "RightHand",
+              "LeftUpLeg", "LeftLeg", "LeftFoot", "LeftToes", "RightUpLeg", "RightLeg",
+              "RightFoot", "RightToes")
+C2_MARKER_BONE = [C2_MAP[nm] for nm in C2_MARKERS]
+# marker-pair -> SMPL long bone (child) for the §P14 length retarget (limbs only; feet excluded).
+C2_BONE_SEG = {18: (5, 6), 20: (6, 7), 19: (9, 10), 21: (10, 11),
+               4: (12, 13), 7: (13, 14), 5: (16, 17), 8: (17, 18)}
+# viz connectivity: markers whose SMPL bones are parent↔child in the SMPL tree.
+C2_MARKER_EDGES = [(i, j) for i in range(len(C2_MARKERS)) for j in range(len(C2_MARKERS))
+                   if SMPL_PARENTS[C2_MARKER_BONE[j]] == C2_MARKER_BONE[i]]
 
 
-def _obs_2c(c_bvh, nf):
+def _markers_2c(c_bvh, nf):
+    """2C BVH -> (markers [T,20,3] Y-up m, marker_bone [20]). Joint centres as MoSh markers."""
     names, parents, offs, ch, frames, _ = sk.load_bvh(c_bvh)
     pos = sk.bvh_fk_world(names, parents, offs, ch, frames, scale=0.01)  # [T,J,3] Y-up m
     pos = torch.from_numpy(pos[:nf].astype(np.float64))
-    obs = torch.zeros(pos.shape[0], 22, 3, dtype=torch.float64)
-    w = torch.zeros(22)
-    for nm, j in C2_MAP.items():
-        if nm in names:
-            obs[:, j] = pos[:, names.index(nm)]; w[j] = 1.0
-    obs[:, 12] = obs[:, 6] + 0.65 * (obs[:, 15] - obs[:, 6])   # neck seed (chest->head)
-    obs[:, 9] = 0.5 * (obs[:, 6] + obs[:, 12])                 # spine3 seed
-    return obs, w
+    markers = torch.stack([pos[:, names.index(nm)] for nm in C2_MARKERS], dim=1)
+    return markers, torch.tensor(C2_MARKER_BONE, dtype=torch.long)
 
 
-def _bvh_world_rots(names, parents, offsets, channels, frames):
-    T, J = frames.shape[0], len(names)
-    gR = np.zeros((T, J, 3, 3), np.float64)
-    rest = np.zeros((J, 3), np.float64)
-    for j in range(J):
-        rest[j] = offsets[j] if parents[j] < 0 else rest[parents[j]] + offsets[j]
-    for t in range(T):
-        vals = frames[t]; k = 0; g = [None] * J
-        for j in range(J):
-            loc = np.eye(3)
-            for cn in channels[j]:
-                v = vals[k]; k += 1
-                if not cn.endswith("position"):
-                    loc = loc @ sk._axis_rot(cn[0], v)
-            g[j] = loc if parents[j] < 0 else g[parents[j]] @ loc
-        gR[t] = np.asarray(g)
-    return gR, rest
-
-
-def _pose0_2c(c_bvh, nf):
-    names, parents, offs, ch, frames, _ = sk.load_bvh(c_bvh)
-    gR, rest = _bvh_world_rots(names, parents, offs, ch, frames)
-    gR = torch.from_numpy(gR[:nf]); rest = torch.from_numpy(rest)
-    smpl = _smpl()
-    Js = (smpl.J_regressor @ smpl.v_template)[:N_JOINTS].double()
-    A, B = [], []
-    for j in range(N_JOINTS):
-        c = SMPL22_PRIMARY_CHILD[j]
-        sj, sc = SMPL_NAME[j], (SMPL_NAME[c] if c >= 0 else None)
-        if c < 0 or sj not in _C2_NAME or sc not in _C2_NAME:
-            continue
-        bj, bc = names.index(_C2_NAME[sj]), names.index(_C2_NAME[sc])
-        A.append(Fn.normalize((rest[bc] - rest[bj]).unsqueeze(0), dim=-1)[0])
-        B.append(Fn.normalize((Js[c] - Js[j]).unsqueeze(0), dim=-1)[0])
-    A, B = torch.stack(A), torch.stack(B)
-    U, _, Vt = torch.linalg.svd(A.t() @ B)
-    d = torch.sign(torch.linalg.det(Vt.t() @ U.t()))
-    M = Vt.t() @ torch.diag(torch.stack([torch.ones_like(d), torch.ones_like(d), d])) @ U.t()
-    T = gR.shape[0]
-    Rw = torch.eye(3, dtype=torch.float64).repeat(T, N_JOINTS, 1, 1)
-    for j in range(N_JOINTS):                  # topological order (parent idx < j)
-        nm = _C2_NAME.get(SMPL_NAME[j])
-        if nm in names:
-            Rw[:, j] = M @ gR[:, names.index(nm)] @ M.t()
-        elif PAR[j] >= 0:
-            Rw[:, j] = Rw[:, PAR[j]]           # INHERIT parent world-rot -> local identity (no twist)
-    return _world_to_local_aa(Rw)
-
-
-def fit_2c(bvh_path, max_frames=200, lam_contact=8.0):
-    """Fit one 2C performer: BVH-rotation init + unified MoSh++ position fit."""
-    obs, w = _obs_2c(bvh_path, max_frames)
-    pose0 = _pose0_2c(bvh_path, max_frames)
-    jp, vp, faces, err = fit_smpl(obs, w, pose0=pose0, lam_contact=lam_contact)
-    return Fit(jp, vp, faces, err, obs.float(), sk.smpl22_edges())
+def fit_2c(bvh_path, max_frames=200):
+    """Fit one 2C performer with the ExPI true-MoSh surface-marker solve (§P23)."""
+    markers, mb = _markers_2c(bvh_path, max_frames)
+    bs = marker_bone_scale(markers, C2_BONE_SEG)
+    jp, vp, faces, err, _ = fit_smpl_markers(markers, mb, bone_scale=bs)
+    return Fit(jp, vp, faces, err, markers.float(), C2_MARKER_EDGES)
 
 
 # ═══════════════════════ ExPI — 18 SURFACE markers ═══════════════════════
@@ -212,15 +183,7 @@ EXPI_BONE_SEG = {4: (10, 12), 5: (11, 13), 7: (12, 14), 8: (13, 15),
 
 
 def expi_bone_scale(obs_markers):
-    """Per-bone length ratios from marker segments -> bone_scale [24] (§P14), clamped."""
-    smpl = _smpl()
-    J = (smpl.J_regressor @ smpl.v_template)[:N_JOINTS].double()
-    bs = torch.ones(24, dtype=torch.float64)
-    for c, (a, b) in EXPI_BONE_SEG.items():
-        Lm = (obs_markers[:, a] - obs_markers[:, b]).norm(dim=-1).mean()
-        Ls = (J[c] - J[PAR[c]]).norm()
-        bs[c] = float((Lm / Ls).clamp(0.85, 1.30))
-    return bs
+    return marker_bone_scale(obs_markers, EXPI_BONE_SEG)
 
 
 def _markers_expi(tsv, nf, follower=False):
