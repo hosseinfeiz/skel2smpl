@@ -1435,8 +1435,20 @@ not this fitting module. Cross-refs to §P8 below point back to that plan.
   ≈0 fit/jitter cost), `lam_smooth` kept at the tuned 0.10. Render-verified no regression (shot_007 frame-130
   still 17/18 mm, natural lunge). *Honest note: jitter was already low; VPoser is a manifold guard for future
   noisy/odd poses, not the jitter fix the prompt assumed — smoothness already prevents jitter.*
-- **§P23.v — SURFACE-VERTEX MARKER ATTACH (user AskUserQuestion 2026-06-18: "surface-vertex marker attach").**
-  DESIGN (not yet implemented — next session). The free joint-offset δ confounds β (verified: relaxing
+- **§P23.v — SURFACE-VERTEX MARKER ATTACH — IMPLEMENTED 2026-06-19 (ExPI)** (user "fitted shape in expi/2C
+  not realistic — big belly + narrow limbs; all 4 should fit a natural SMPL shape"; AskUserQuestion → vertex-
+  attach). LANDED `051bd9b`: `_fk_verts` (sparse-vertex LBS, validated bit-exact vs `forward_R`, err 5e-17);
+  `fit_markers(marker_vert=…)` path (markers→SMPL verts, no δ, β freed); `EXPI_VERT` (SSM/AMASS vertex IDs,
+  LATERAL-hip 1228/4712 + acromion 1861/5322 carry width); `fit_expi` uses it with `lam_beta=1e-3` (recalib
+  from 0.3 — the m²-scale data term crushed β to 0 at 0.3; sweep: 0.3→‖β‖0.01, 1e-3→0.95, 3e-4→2.0). RESULT
+  (render-verified acro2 a-frame2): **belly GONE, lean athletic build, ‖β‖=1.21** (G23f in-range), shoulder
+  width 326→~410 mm. TRADEOFF: marker residual 27→62 mm (surface-attach can't hide error in a free offset);
+  limbs fit (wrists 16-24, knees/elbows 60-78), torso carries the slack (back 123, hip 98, shoulder 86-95).
+  **OPEN:** (a) refine back(3508)/hip vertex correspondence to cut the 62 mm; (b) optional scalar normal
+  residual r_m (skipped — markers ~1-2 cm off skin set the floor); (c) **2C/ReMoCap girth NOT addressed** —
+  joint-CENTRE markers can't observe surface width (β stays 0, mean belly remains); they need a template β
+  (the option the user did NOT pick). ORIGINAL DESIGN BELOW.
+  DESIGN. The free joint-offset δ confounds β (verified: relaxing
   `lam_beta` 1.0→0.02 leaves ‖β‖≈0.1, markers absorbed by δ ⇒ β never moves). MoSh-strict fix: each marker m
   attaches to a SPECIFIC SMPL mesh VERTEX `v(m)` (or barycentric surface point), virtual marker
   `mk_m = LBS_vertex(β,θ,trans)[v(m)] + r_m·n̂` with `r_m` a SMALL normal residual (tightly regularized). The

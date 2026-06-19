@@ -14,7 +14,23 @@
 - Phase name: "MoSh surface-marker solve for joint-incongruent reference skeletons."
 - Status: **in-progress** — fitting works (all 4 datasets render plausibly); girth-recovery (§P23.v) open.
 
-## What was just done (2026-06-19 c — root-orientation init, commit `4ebbfb3`)
+## What was just done (2026-06-19 e — §P23.v ExPI vertex-attach, commit `051bd9b`)
+- **Body SHAPE recovered for ExPI** (user: "expi/2C big belly + narrow limbs; all 4 natural shape").
+  Root cause: β≡0 (SMPL neutral mean has a belly) + bone_scale stretches limb LENGTH without width. β stuck
+  at 0 because the joint+free-offset δ absorbs all width. FIX (user chose vertex-attach): `_fk_verts`
+  (sparse-vertex LBS, validated bit-exact vs forward_R), `fit_markers(marker_vert=…)` path (no δ, β freed),
+  `EXPI_VERT` (SSM/AMASS vertex IDs; lateral-hip 1228/4712 + acromion 1861/5322 give width), `fit_expi`
+  `lam_beta=1e-3` (recalibrated from 0.3 — m²-scale data term crushed β). RESULT (render): belly GONE, lean
+  build, ‖β‖=1.21. TRADEOFF: residual 27→62 mm (torso markers back 123/hip 98/shoulder 86-95 carry slack).
+- **VPoser** wired into `fit_markers` (commit `87c66d7`, default `lam_vp=2e-4`) — but the fit was already
+  on-manifold (implaus 0.035 vs §P18's 5.30); VPoser barely helps and slightly raises jitter; smoothness is
+  the jitter lever and is already near-optimal at 0.10. Honest: not the jitter fix the prompt assumed.
+- **NEXT (open):** (1) refine ExPI back/hip vertex correspondence to cut the 62 mm residual; (2) **2C/ReMoCap
+  still have the belly** — joint-centre markers can't observe girth, so β stays 0; they need a TEMPLATE β
+  (the option the user did NOT pick) — surface to the user before adding. (3) optional scalar normal residual
+  r_m for vertex markers. See MASTER_PLAN §P23.v.
+
+## What was done (2026-06-19 c — root-orientation init, commit `4ebbfb3`)
 - **Spinning-root + "elbow not fitted" FIXED** (user: ninjutsu still rotating root). Root cause: the marker
   objective is gauge-degenerate — a body turn can be absorbed by the ROOT or by twisting spine/hips/shoulders.
   From zero-init the optimizer chose the twist minimum on turning/acrobatic frames → erratic spinning root +
