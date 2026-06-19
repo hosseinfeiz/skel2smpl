@@ -761,7 +761,7 @@ def fit_markers(obs_markers, marker_bone, smpl_model, Q, betas_init=None,
                 lam_smooth: float = 0.10, lam_delta: float = 0.02,
                 lam_beta: float = 1.0, lam_contact: float = 0.0,
                 lam_anchor: float = 0.5, lam_limit: float = 1.0, lam_s: float = 2.0,
-                sigma_sq: float = 0.5, sigma_sq0: float = 0.5):
+                lam_vp: float = 2e-4, sigma_sq: float = 0.5, sigma_sq0: float = 0.5):
     """§P23 — true-MoSh surface-marker SMPL solve for a joint-INCONGRUENT reference.
 
     The reference points are SURFACE markers, NOT SMPL joints (ExPI: hip/knee/heel on
@@ -864,6 +864,17 @@ def fit_markers(obs_markers, marker_bone, smpl_model, Q, betas_init=None,
     trans = root0.clone().requires_grad_(True)
     contact, floor = detect_contacts(obs) if lam_contact > 0 else (None, None)
     cm = contact.to(dt) if contact is not None else None
+    # §P18 VPoser natural-pose prior (recon form). Per-frame ⇒ pulls each pose onto the natural
+    # manifold; the smoothness term keeps adjacent frames from snapping to different manifold
+    # solutions (§P18 G18c). Applied only in the POSE stage (after shape/offsets settle) to keep
+    # it a refinement and halve the VAE cost. Gracefully disabled if the weights are absent.
+    use_vp = lam_vp > 0
+    if use_vp:
+        from skel2smpl.vposer import vposer_prior_loss
+        try:
+            vposer_prior_loss(pose[:, 1:22].detach())            # warm-load + verify weights
+        except Exception:
+            use_vp = False
     n_it = iters_shape + iters_pose
     opt = torch.optim.Adam([beta, log_s, delta, pose, trans], lr=lr)
     for i in range(n_it):
@@ -872,6 +883,8 @@ def fit_markers(obs_markers, marker_bone, smpl_model, Q, betas_init=None,
         loss = (data_term(v, _sig(i, n_it)) + lam_smooth * smooth_term(pose, T)
                 + lam_beta * (beta ** 2).mean() + lam_delta * (delta ** 2).sum()
                 + (aw * (pose ** 2).sum(-1)).mean() + lam_s * log_s ** 2)
+        if use_vp and i >= iters_shape:
+            loss = loss + lam_vp * vposer_prior_loss(pose[:, 1:22])
         if lam_limit > 0:
             loss = loss + lam_limit * _limit_residual(pose, _lim_axes, _lim_ax, _lim_lo, _lim_hi)
         if lam_contact > 0:

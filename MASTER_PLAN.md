@@ -1420,6 +1420,21 @@ not this fitting module. Cross-refs to §P8 below point back to that plan.
   orientation tracking the turn (no spin), frame-130 contortion → a natural lunge (17/49→17/18 mm). No
   regression: 2C 12/11, ExPI 27/24, ninjutsu static 16/13. *Lesson: a low PER-MARKER residual can coexist with
   a globally-wrong body when a degeneracy lets the limbs absorb the global DOF — the data-driven init breaks it.*
+- **VPOSER PRIOR IN THE MARKER SOLVE (2026-06-19, user "add the vpose and smoothness loss to prevent
+  jitter") [§P18 extended into §P23].** Wired the §P18 VPoser v2 recon prior (`vposer.py::vposer_prior_loss`,
+  Pavlakos et al. SMPLify-X/SMPL-X arXiv:1904.05866) into `fit_markers` as `lam_vp·‖pb−VPoser(pb)‖²` on body
+  joints 1..21, applied in the POSE stage only (refinement), load-guarded (graceful no-op if weights absent).
+  Smoothness (`smooth_term`, 2nd-order pose-accel) was already in the loss. **CALIBRATION (`scratch_sweep*`,
+  shot_007 reactor, 120 f):** the marker solve is ALREADY on-manifold — VPoser-implausibility **0.035** here
+  vs §P18's GN baseline 5.30 (the anchors+limits+smoothness already do the job). Sweep `lam_vp∈{0,2e-4,1e-3,
+  4e-3}`: implaus 0.035→0.030→0.020→0.012 but fit 16.8→17.3 mm and **jitter 5.75→6.89 mm/f² INCREASES** (VPoser
+  is per-FRAME, no temporal coupling — it trades jitter for naturalness, §P18 G18c). Sweep `lam_smooth∈{0.1,
+  0.3,0.8,2.0}`: jitter 6.26→**5.98**→7.62→7.15 — i.e. smoothness (not VPoser) is the jitter lever, and it's
+  already near-optimal at the §P23 default 0.10 (0.30 is marginally smoother at +0.6 mm fit; >0.3 over-smooths
+  and worsens it). DECISION: VPoser default `lam_vp=2e-4` (gentle, honors the request; implaus 0.035→0.030 at
+  ≈0 fit/jitter cost), `lam_smooth` kept at the tuned 0.10. Render-verified no regression (shot_007 frame-130
+  still 17/18 mm, natural lunge). *Honest note: jitter was already low; VPoser is a manifold guard for future
+  noisy/odd poses, not the jitter fix the prompt assumed — smoothness already prevents jitter.*
 - **§P23.v — SURFACE-VERTEX MARKER ATTACH (user AskUserQuestion 2026-06-18: "surface-vertex marker attach").**
   DESIGN (not yet implemented — next session). The free joint-offset δ confounds β (verified: relaxing
   `lam_beta` 1.0→0.02 leaves ‖β‖≈0.1, markers absorbed by δ ⇒ β never moves). MoSh-strict fix: each marker m
