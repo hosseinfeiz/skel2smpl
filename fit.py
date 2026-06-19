@@ -130,6 +130,47 @@ def _fk(smpl_model, pose, betas=None, bone_scale=None):
     return G[:, :N_JOINTS, :3, 3], G[:, :N_JOINTS, :3, :3]
 
 
+def _fk_verts(smpl_model, pose, betas, vids, bone_scale=None):
+    """§P23.v — sparse-vertex FK: joints + a HANDFUL of LBS surface vertices (`vids`).
+
+    Returns (j_native [T,22,3], R_world [T,22,3,3], v_native [T,len(vids),3]) all in the
+    pre-_TRANS native frame, exactly matching `_fk` for the joints and `forward_R` for the
+    verts — but skinning ONLY the marker vertices (not all 6890), so the marker→VERTEX data
+    term is cheap enough for the hot loop. The vertex positions depend on β through the
+    shapedirs (the surface MOVES with shape), which is what makes β identifiable from
+    surface markers (joint centres don't carry girth; §P23.v). `bone_scale` retargets J +
+    rides the verts along by the LBS-weighted joint displacement (retarget_bones form)."""
+    dt = smpl_model.dtype
+    pose = torch.as_tensor(pose, dtype=dt)
+    T = pose.shape[0]
+    betas = (torch.zeros(smpl_model.n_betas, dtype=dt) if betas is None
+             else torch.as_tensor(betas, dtype=dt))
+    v_shaped = smpl_model.v_template + torch.einsum(
+        "vxb,b->vx", smpl_model.shapedirs, betas)
+    J = smpl_model.J_regressor @ v_shaped                        # [24,3]
+    W = smpl_model.weights                                       # [6890,24]
+    vids = torch.as_tensor(vids, dtype=torch.long)
+    vg = v_shaped[vids]                                          # [nv,3] rest marker verts
+    Wg = W[vids]                                                 # [nv,24]
+    Jr = J
+    if bone_scale is not None:                                   # §P14 translation-form retarget
+        Jr = retarget_joints(J, torch.as_tensor(bone_scale, dtype=dt), smpl_model.parents)
+        vg = vg + Wg @ (Jr - J)
+    eye = torch.eye(3, dtype=dt).expand(T, 24 - N_JOINTS, 3, 3)
+    R = torch.cat([exp_so3(pose.reshape(-1, 3)).reshape(T, N_JOINTS, 3, 3), eye], dim=1)
+    pose_feat = (R[:, 1:] - torch.eye(3, dtype=dt)).reshape(T, -1)
+    posed = vg[None] + torch.einsum("vxp,tp->tvx", smpl_model.posedirs[vids], pose_feat)
+    G = smpl_model._global_transforms(R, Jr)                     # [T,24,4,4]
+    Jr_pad = torch.cat([Jr, torch.zeros(24, 1, dtype=dt)], dim=1)
+    offset = torch.einsum("tjmn,jn->tjm", G[:, :, :3, :], Jr_pad)
+    G_rel = G.clone()
+    G_rel[:, :, :3, 3] = G[:, :, :3, 3] - offset
+    Tlbs = torch.einsum("vj,tjmn->tvmn", Wg, G_rel)              # [T,nv,4,4]
+    vh = torch.cat([posed, torch.ones(T, vids.shape[0], 1, dtype=dt)], dim=-1)
+    verts = torch.einsum("tvmn,tvn->tvm", Tlbs, vh)[..., :3]     # [T,nv,3] native
+    return G[:, :N_JOINTS, :3, 3], G[:, :N_JOINTS, :3, :3], verts
+
+
 def forward_proper(smpl_model, pose, Q, betas=None, scale=1.0, root_target=None,
                    want_verts=False, skinning="lbs", bone_scale=None):
     """THE single SMPL forward, used by the objective AND the render, GT and pred.
@@ -761,7 +802,8 @@ def fit_markers(obs_markers, marker_bone, smpl_model, Q, betas_init=None,
                 lam_smooth: float = 0.10, lam_delta: float = 0.02,
                 lam_beta: float = 1.0, lam_contact: float = 0.0,
                 lam_anchor: float = 0.5, lam_limit: float = 1.0, lam_s: float = 2.0,
-                lam_vp: float = 2e-4, sigma_sq: float = 0.5, sigma_sq0: float = 0.5):
+                lam_vp: float = 2e-4, marker_vert=None,
+                sigma_sq: float = 0.5, sigma_sq0: float = 0.5):
     """§P23 — true-MoSh surface-marker SMPL solve for a joint-INCONGRUENT reference.
 
     The reference points are SURFACE markers, NOT SMPL joints (ExPI: hip/knee/heel on
@@ -815,13 +857,28 @@ def fit_markers(obs_markers, marker_bone, smpl_model, Q, betas_init=None,
     if lam_limit > 0:
         _lim_axes, _lim_ax, _lim_lo, _lim_hi = smpl_joint_limits(smpl_model, None, bone_scale)
 
+    # §P23.v — SURFACE-VERTEX path. When `marker_vert` is given, each marker is attached to a
+    # specific SMPL mesh VERTEX (not a joint + free offset). The vertex moves with β (the surface
+    # deforms with shape), so the body WIDTHS (iliac-crest hip, acromion shoulder markers) now
+    # CONSTRAIN β ⇒ real build recoverable (a joint centre + free δ carries no girth — §P23.v).
+    # δ is unused here; β is freed by a low lam_beta in the caller.
+    mv = None if marker_vert is None else torch.as_tensor(marker_vert, dtype=torch.long)
+
     def markers_of(pose, trans, s, beta, delta):
-        jnat, Rnat = _fk(smpl_model, pose, beta, bone_scale=bone_scale)
+        if mv is None:
+            jnat, Rnat = _fk(smpl_model, pose, beta, bone_scale=bone_scale)
+            jp = torch.einsum("mn,tjn->tjm", QM, jnat)
+            Reff = torch.einsum("mn,tjnk->tjmk", QM, Rnat)
+            body = trans[:, None, :] + s * (jp - jp[:, :1])
+            off = torch.einsum("tmkl,ml->tmk", Reff[:, mb], delta)
+            return body[:, mb] + s * off, body
+        jnat, Rnat, vnat = _fk_verts(smpl_model, pose, beta, mv, bone_scale=bone_scale)
         jp = torch.einsum("mn,tjn->tjm", QM, jnat)
-        Reff = torch.einsum("mn,tjnk->tjmk", QM, Rnat)
-        body = trans[:, None, :] + s * (jp - jp[:, :1])
-        off = torch.einsum("tmkl,ml->tmk", Reff[:, mb], delta)
-        return body[:, mb] + s * off, body
+        vp = torch.einsum("mn,tvn->tvm", QM, vnat)
+        root = jp[:, :1]
+        body = trans[:, None, :] + s * (jp - root)               # joints, for contact/limits
+        vbody = trans[:, None, :] + s * (vp - root)               # the surface markers
+        return vbody, body
 
     # ExPI/2C are CLEAN mocap (no marker outliers), so the GMOF runs at a LARGE σ
     # (≈L2 over the whole working range) — a redescending small-σ robustifier dead-zones

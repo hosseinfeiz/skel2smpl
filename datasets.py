@@ -31,7 +31,7 @@ import torch
 
 from skel2smpl.smpl import SMPL
 from skel2smpl.fit import (solve_shape, solve_pose, forward_proper, fit_markers,
-                           resample_spine_targets, measure_bone_ratios, _fk)
+                           resample_spine_targets, measure_bone_ratios, _fk, _fk_verts)
 from skel2smpl.constants import _RX_NEG90, N_JOINTS, SMPL_PARENTS, JOINT_NAMES
 from skel2smpl import skeletons as sk
 
@@ -77,24 +77,33 @@ def fit_smpl(obs, w, pose0=None, lam_contact=8.0, iters=600, Q=None):
     return jp.float(), vp.float(), smpl.faces, err
 
 
-def fit_smpl_markers(obs_markers, marker_bone, lam_contact=0.0, bone_scale=None):
+def fit_smpl_markers(obs_markers, marker_bone, lam_contact=0.0, bone_scale=None,
+                     marker_vert=None, lam_beta=1.0):
     """§P23 — true-MoSh surface-marker fit. obs_markers [T,M,3] proper-frame + marker_bone [M]
     -> (joints[T,22,3], verts, faces, marker_err_mm, virtual_markers). Q=RXP (obs native Y-up).
-    bone_scale defaults to the per-bone anthropometric retarget measured from marker segments."""
+    bone_scale defaults to the per-bone anthropometric retarget measured from marker segments.
+    `marker_vert` [M] (§P23.v): attach markers to SMPL VERTICES (β identifiable) instead of
+    joints+offset; `lam_beta` is then relaxed so the build is recovered."""
     smpl = _smpl()
     if bone_scale is None:
         bone_scale = expi_bone_scale(obs_markers)
     pose, trans, beta, s, delta = fit_markers(obs_markers, marker_bone, smpl, RXP,
-                                              lam_contact=lam_contact, bone_scale=bone_scale)
+                                              lam_contact=lam_contact, bone_scale=bone_scale,
+                                              marker_vert=marker_vert, lam_beta=lam_beta)
     jp, vp = forward_proper(smpl, pose, RXP, betas=beta, scale=s, root_target=trans,
                             want_verts=True, bone_scale=bone_scale)
     dt = smpl.dtype
     QM = (RXP @ _RX_NEG90.double()).to(dt)
-    jnat, Rnat = _fk(smpl, pose, beta, bone_scale=bone_scale)
-    Reff = torch.einsum("mn,tjnk->tjmk", QM, Rnat)
-    mb = torch.as_tensor(marker_bone, dtype=torch.long)
-    jpd = jp.to(dt)
-    vm = jpd[:, mb] + s * torch.einsum("tmkl,ml->tmk", Reff[:, mb], delta.to(dt))
+    if marker_vert is not None:                                  # §P23.v vertex markers
+        jnat, _, vnat = _fk_verts(smpl, pose, beta, marker_vert, bone_scale=bone_scale)
+        jpn = torch.einsum("mn,tjn->tjm", QM, jnat)
+        vpn = torch.einsum("mn,tvn->tvm", QM, vnat)
+        vm = trans[:, None, :].to(dt) + s * (vpn - jpn[:, :1])
+    else:
+        jnat, Rnat = _fk(smpl, pose, beta, bone_scale=bone_scale)
+        Reff = torch.einsum("mn,tjnk->tjmk", QM, Rnat)
+        mb = torch.as_tensor(marker_bone, dtype=torch.long)
+        vm = jp.to(dt)[:, mb] + s * torch.einsum("tmkl,ml->tmk", Reff[:, mb], delta.to(dt))
     err = (vm - obs_markers.to(dt)).norm(dim=-1).mean().item() * 1000.0
     return jp.float(), vp.float(), smpl.faces, err, vm.float()
 
@@ -171,6 +180,16 @@ EXPI_BONE_SEG = {4: (10, 12), 5: (11, 13), 7: (12, 14), 8: (13, 15),
                  18: (4, 6), 19: (5, 7), 20: (6, 8), 21: (7, 9)}
 
 
+# §P23.v — each ExPI surface marker attached to a SPECIFIC SMPL mesh VERTEX (the canonical
+# SSM/AMASS marker-set vertex IDs; SMPL & SMPL-H share these 0..6889 verts). Fitting markers to
+# these β-dependent surface points makes the body BUILD identifiable — the LATERAL-hip (1228/4712,
+# the widest pelvis verts at hip-joint height — the SSM ASIS verts 857/4343 are too anterior/narrow,
+# 186 mm vs the 352 mm marker span) and acromion shoulder (1861/5322) verts carry hip/shoulder
+# WIDTH, which a joint centre + free offset cannot. Order matches EXPI_MARKERS.
+EXPI_VERT = [0, 182, 3694, 3508, 1861, 5322, 1666, 5135, 2112, 5573,
+             1228, 4712, 1053, 4538, 3387, 6786, 3233, 6633]
+
+
 def expi_bone_scale(obs_markers):
     return marker_bone_scale(obs_markers, EXPI_BONE_SEG)
 
@@ -189,9 +208,11 @@ def _markers_expi(tsv, nf, follower=False):
 
 
 def fit_expi(tsv_path, max_frames=200, follower=False):
-    """Fit one ExPI performer (leader / follower): true-MoSh surface-marker solve (§P23)."""
+    """Fit one ExPI performer (leader / follower): §P23.v surface-VERTEX MoSh solve — markers
+    attach to SMPL mesh verts so the body BUILD (β) is recovered (no mean-SMPL belly), not the
+    §P23 joint+offset path (β≡0). `lam_beta=0.3` (§P13) frees the shape in-distribution."""
     markers, mb = _markers_expi(tsv_path, max_frames, follower=follower)
-    jp, vp, faces, err, _ = fit_smpl_markers(markers, mb)
+    jp, vp, faces, err, _ = fit_smpl_markers(markers, mb, marker_vert=EXPI_VERT, lam_beta=1e-3)
     return Fit(jp, vp, faces, err, markers.float(), EXPI_EDGES)
 
 
