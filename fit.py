@@ -716,6 +716,7 @@ def fit_markers(obs_markers, marker_bone, smpl_model, Q, betas_init=None,
                 iters_shape: int = 500, iters_pose: int = 500, lr: float = 0.02,
                 lam_smooth: float = 0.10, lam_delta: float = 0.02,
                 lam_beta: float = 1.0, lam_contact: float = 0.0,
+                lam_anchor: float = 0.5, lam_limit: float = 1.0,
                 sigma_sq: float = 0.5, sigma_sq0: float = 0.5):
     """§P23 — true-MoSh surface-marker SMPL solve for a joint-INCONGRUENT reference.
 
@@ -749,6 +750,14 @@ def fit_markers(obs_markers, marker_bone, smpl_model, Q, betas_init=None,
     sw[_TORSO] = 3.0; sw[_LEGS] = 3.0; sw[_FEET] = 3.0
     sw[0] = 1.0          # root carries REAL global rotation (not jitter) — don't over-smooth;
                          # the lateral hip markers (attached to the pelvis) lag if it is (§P23)
+    # No marker hits the spine1/2/3, neck or collars, so those joints are FREE to curl into an
+    # implausible torso (the §P23 pot-belly/hunch) that still satisfies the sparse markers.
+    # Anchor THEM to rest (straight spine) — strong where unconstrained, zero on the
+    # marker-pinned limbs/head/root. Plus §P17 anatomical joint limits keep every joint in ROM.
+    aw = torch.zeros(N_JOINTS, dtype=dt)
+    aw[[3, 6, 9, 12, 13, 14]] = lam_anchor
+    if lam_limit > 0:
+        _lim_axes, _lim_ax, _lim_lo, _lim_hi = smpl_joint_limits(smpl_model, None, bone_scale)
 
     def markers_of(pose, trans, s, beta, delta):
         jnat, Rnat = _fk(smpl_model, pose, beta, bone_scale=bone_scale)
@@ -799,7 +808,10 @@ def fit_markers(obs_markers, marker_bone, smpl_model, Q, betas_init=None,
         opt.zero_grad()
         v, body = markers_of(pose, trans, torch.exp(log_s), beta, delta)
         loss = (data_term(v, _sig(i, n_it)) + lam_smooth * smooth_term(pose, T)
-                + lam_beta * (beta ** 2).mean() + lam_delta * (delta ** 2).sum())
+                + lam_beta * (beta ** 2).mean() + lam_delta * (delta ** 2).sum()
+                + (aw * (pose ** 2).sum(-1)).mean())
+        if lam_limit > 0:
+            loss = loss + lam_limit * _limit_residual(pose, _lim_axes, _lim_ax, _lim_lo, _lim_hi)
         if lam_contact > 0:
             zf = body[:, _FOOT_GROUND, 2]
             ground_pen = (torch.relu(floor - zf) ** 2 * cm).mean()
