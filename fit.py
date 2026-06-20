@@ -433,6 +433,86 @@ def fit_smpl_betas_limblen(joints_obs, pose, smpl_model, n_frames: int = 12,
     return out if len(out) > 1 else beta
 
 
+def kintree_from_marker_bone(marker_bone):
+    """Per-dataset kintree for optimizeShape: marker-index pairs (parent, child) whose
+    SMPL bones are DIRECT parent↔child in the SMPL tree. Derived from each dataset's
+    `marker_bone` (marker→SMPL joint), so it auto-adapts and a segment crossing an
+    UNobserved joint is simply absent (no phantom bone-to-origin). §P24."""
+    mb = [int(b) for b in marker_bone]
+    pos = {}                                   # SMPL joint -> first marker observing it
+    for k, b in enumerate(mb):
+        pos.setdefault(b, k)
+    edges = []
+    for k, b in enumerate(mb):
+        p = int(SMPL_PARENTS[b])
+        if p >= 0 and p in pos:
+            edges.append((pos[p], k))
+    return edges
+
+
+def optimize_shape(keypoints3d, kintree, marker_bone, smpl_model, conf=None,
+                   betas_init=None, lam_reg: float = 0.3, lam_init: float = 0.0,
+                   w_data: float = 1000.0, max_iter: int = 50, spine_weight: float = 0.1):
+    """Faithful port of EasyMocap `optimizeShape` (pose_estimation/kinematics/
+    optimization.py:785-836), adapted per dataset via a marker-space `kintree`.
+
+    For each kintree edge (p,c): observed `limb_length = ‖kp_c − kp_p‖`; the SMPL
+    estimate uses the REST joints J(β) of the two markers' SMPL bones (direct
+    parent-child bone length is pose-invariant, so no pose is needed). The residual
+    detaches the SMPL bone DIRECTION and matches only its LENGTH:
+        err = (dst − src) − unit(dst − src).detach() · limb_length .
+    `limb_conf = min(conf_p, conf_c)` zeros any edge touching an unobserved marker.
+    loss = w_data·Σ conf·‖err‖² / F + lam_reg·‖β‖² (+ lam_init·‖β−β0‖²).
+    LBFGS(strong_wolfe, max_iter). β-only (no scale — boxing has no scale field). §P24.
+
+    keypoints3d: [T,K,3] observed marker positions (any frame; lengths are invariant).
+    kintree:     list of (parent_marker, child_marker) index pairs (`kintree_from_marker_bone`).
+    marker_bone: [K] SMPL joint each marker attaches to. conf: [K] or [T,K] (default 1)."""
+    dt = smpl_model.dtype
+    kp = torch.as_tensor(keypoints3d, dtype=dt)
+    T, K = kp.shape[0], kp.shape[1]
+    mb = torch.as_tensor(marker_bone, dtype=torch.long)
+    kt = torch.as_tensor(kintree, dtype=torch.long).reshape(-1, 2)
+    par_m, chi_m = kt[:, 0], kt[:, 1]
+    bp, bc = mb[par_m], mb[chi_m]                                  # SMPL bones of each edge
+    limb_obs = (kp[:, chi_m] - kp[:, par_m]).norm(dim=-1)         # [T,E] observed lengths
+    if conf is None:
+        cw = torch.ones(kt.shape[0], dtype=dt)
+    else:
+        c = torch.as_tensor(conf, dtype=dt)
+        c = c.expand(T, K) if c.dim() == 2 else c.unsqueeze(0).expand(T, K)
+        cw = torch.minimum(c[:, par_m], c[:, chi_m]).mean(0)      # [E] min-endpoint conf
+    # §P9: bones ARRIVING at a spine/neck/collar joint are topology-corrupted (the reference's
+    # 5-spine over-length vs SMPL's 3-spine) → downweight so β fits the clean LIMB lengths, not
+    # the phantom-long spine (else ‖β‖ inflates: ninjutsu 4.6 → in-distribution).
+    spine = set(int(j) for j in SPINE_NECK_COLLAR)
+    sw = torch.tensor([spine_weight if int(b) in spine else 1.0 for b in bc.tolist()], dtype=dt)
+    cw = cw * sw
+    b0 = None if betas_init is None else torch.as_tensor(betas_init, dtype=dt)
+    beta = (torch.zeros(smpl_model.n_betas, dtype=dt) if b0 is None else b0.clone())
+    beta.requires_grad_(True)
+    opt = torch.optim.LBFGS([beta], line_search_fn='strong_wolfe', max_iter=max_iter)
+
+    def closure():
+        opt.zero_grad()
+        v_shaped = smpl_model.v_template + torch.einsum(
+            "vxb,b->vx", smpl_model.shapedirs, beta)
+        J = smpl_model.J_regressor @ v_shaped                     # [24,3] rest joints
+        src, dst = J[bp], J[bc]                                   # [E,3]
+        direct = (dst - src).detach()
+        direct = direct / (direct.norm(dim=-1, keepdim=True) + 1e-4)
+        err = (dst - src).unsqueeze(0) - direct.unsqueeze(0) * limb_obs.unsqueeze(-1)  # [T,E,3]
+        data = ((err ** 2).sum(-1) * cw).sum() / T
+        loss = w_data * data + lam_reg * (beta ** 2).sum()
+        if lam_init and b0 is not None:
+            loss = loss + lam_init * ((beta - b0) ** 2).sum()
+        loss.backward()
+        return loss
+
+    opt.step(closure)
+    return beta.detach()
+
+
 def solve_shape(obs_joints, init_pose, smpl_model, lam_reg: float = 0.3,
                 spine_weight: float = 0.1):
     """Stage 1 (shape): the EasyMocap limb-length (beta, s) solve.
@@ -517,7 +597,9 @@ def smpl_joint_limits(smpl_model, betas=None, bone_scale=None):
     phys_body; axes derived from the β/bone_scale-shaped rest joints."""
     dt = smpl_model.dtype
     J = _rest_joints_native(smpl_model, betas, bone_scale, N_JOINTS).to(dt)
-    return (_anatomical_limit_axes(J), _LIMIT_AXIAL, _ROM_LO.to(dt), _ROM_HI.to(dt))
+    dev = J.device                                          # device-correct (CPU or CUDA)
+    return (_anatomical_limit_axes(J), _LIMIT_AXIAL.to(dev),
+            _ROM_LO.to(device=dev, dtype=dt), _ROM_HI.to(device=dev, dtype=dt))
 
 
 def _quat_mul(ax, ay, az, aw, bx, by, bz, bw):
@@ -829,10 +911,11 @@ def fit_markers(obs_markers, marker_bone, smpl_model, Q, betas_init=None,
     obs_markers [T,M,3] proper-frame markers; marker_bone [M] long SMPL joint indices.
     Returns (pose [T,22,3], trans [T,3], beta [n_betas], s float, delta [M,3])."""
     dt = smpl_model.dtype
-    obs = torch.as_tensor(obs_markers, dtype=dt)
+    dev = smpl_model.v_template.device                          # CPU or CUDA (device-correct)
+    obs = torch.as_tensor(obs_markers, dtype=dt).to(dev)
     T, M = obs.shape[0], obs.shape[1]
-    mb = torch.as_tensor(marker_bone, dtype=torch.long)
-    QM = torch.as_tensor(Q, dtype=dt) @ _RX_NEG90.to(dt)         # native → proper
+    mb = torch.as_tensor(marker_bone, dtype=torch.long).to(dev)
+    QM = torch.as_tensor(Q, dtype=dt).to(dev) @ _RX_NEG90.to(device=dev, dtype=dt)  # native → proper
     nb = smpl_model.n_betas
     # root proxy = mean of the hip-attached markers (fallback: marker centroid) for trans init.
     hipm = torch.tensor([k for k in range(M) if mb[k].item() in (1, 2)], dtype=torch.long)

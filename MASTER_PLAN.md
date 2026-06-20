@@ -1525,6 +1525,32 @@ not this fitting module. Cross-refs to §P8 below point back to that plan.
   observed-joint set. Default `obs_mask=None` = prior behavior (koopman/§P12 callers unchanged). Ninjutsu
   unaffected (full observation). Gate: 2C/LindyHop ‖β‖ back in-distribution (≤~3) and marker err in the
   ninjutsu band (~40–70 mm), not 153 mm.
+- **OPTIMIZESHAPE-PER-DATASET AMENDMENT (user, 2026-06-19, SUPERSEDES the obs_mask band-aid).** User:
+  "use the optimizeShape in pose_estimation/optimization.py for estimating the SMPL shape; adapt it for
+  each dataset in skel2smpl and implement it." So β for the JOINT datasets (2C/LindyHop/Ninjutsu) is now
+  a FAITHFUL port of `optimizeShape` (optimization.py:785-836): a per-dataset **kintree** of
+  parent→child keypoint pairs; observed `limb_length=‖kp_c−kp_p‖`; SMPL estimate from the REST joints
+  `J(β)` (direct parent-child bone length is pose-invariant); direction-detached residual
+  `err=(dst−src)−unit(dst−src).detach()·limb_length`; `limb_conf=min(conf_p,conf_c)` (zeros any segment
+  touching an unobserved joint — the principled phantom-bone exclusion); loss `=w_s3d·Σconf·err² +
+  reg_shapes·‖β‖² (+ init_shape)`, LBFGS(strong_wolfe, max_iter=50). The **per-dataset adaptation IS the
+  kintree**, derived generically from each dataset's `marker_bone`: edge (i,j) iff
+  `SMPL_PARENTS[marker_bone[j]]==marker_bone[i]` (`kintree_from_marker_bone`). NEW `skel2smpl/fit.py::
+  optimize_shape` + `kintree_from_marker_bone`; `to_boxing_xml.py` calls them (drops the obs_mask path).
+  `fit_smpl_betas_limblen` is KEPT (koopman legacy tests import it). ExPI keeps the §P23.v surface-vertex
+  β path (β identifiable from skin; limb-length not applicable to surface markers). `optimize_shape` keeps
+  the §P9 `spine_weight=0.1` downweight on bones arriving at spine/neck/collar (the 5-spine→3-spine
+  topology corruption inflates β otherwise: ninjutsu 4.6→1.9). MEASURED (GPU): 2C 42/50 ‖β‖1.97,
+  LindyHop 31/41 ‖β‖2.0, Ninjutsu 46/38 ‖β‖1.9, ExPI 56/44 ‖β‖1.4 — all G24a<0.003mm.
+- **GPU AMENDMENT (user, 2026-06-19): the solvers run on CUDA.** A 500-frame `fit_markers` (1000 Adam
+  iters) on CPU took minutes-to-timeout — unworkable for the ~596-seq `--all`. `to_boxing_xml` now runs
+  `optimize_shape`+`fit_markers` on a GPU `SMPL` (`_smpl_gpu`, buffers built under `torch.device(DEV)`)
+  inside a `with torch.device(DEV)` context; outputs `.cpu()` for the unchanged XML/verify I/O. fit.py
+  is made device-correct at the 3 module-constant sites (`fit_markers` `_RX_NEG90`; `smpl_joint_limits`
+  `_LIMIT_AXIAL`/`_ROM_LO`/`_ROM_HI`) by deriving device from `smpl_model.v_template.device` — CPU
+  callers (koopman) unchanged. `lam_vp=0` in the §P24 fit (plain-SMPL is already on-manifold; also avoids
+  the VPoser device path). MEASURED: 500f ≈ 5–7 s compute (~15 s incl. one-time CUDA init), 45 MB VRAM —
+  ~596 seqs ≈ tens of minutes, not days.
 - **DECISION (user, 2026-06-19): PURE plain SMPL — exact boxing schema, NO bone_scale, NO loader change.**
   The shared `smpl_xml_payload` stays byte-for-byte upstream. β is estimated by the EasyMocap
   `optimizeShape` (skel2smpl `fit_smpl_betas_limblen`, β-only, no scale — the method the user named in

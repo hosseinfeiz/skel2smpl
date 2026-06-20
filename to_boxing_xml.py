@@ -8,11 +8,12 @@ so the four datasets load exactly like boxing's optimization/smpl.xml via the UN
 `smpl_xml_payload` (plain `SMPL.forward(aa, trans, β)`). After this skel2smpl is not needed
 at runtime.
 
-β estimation (user-directed): the EasyMocap limb-length shape solve
-`fit_smpl_betas_limblen` (= pose_estimation/kinematics/optimization.py::optimizeShape, β-only,
-no scale) estimates β from the observed skeleton; that β is FROZEN and the pose is solved
-with it (`fit_markers(fit_beta=False, bone_scale=None)`). ExPI uses the §P23.v surface-vertex
-path instead (β identifiable from the skin markers). Pure plain SMPL — no bone_scale, no scale.
+β estimation (user-directed): the EasyMocap `optimizeShape` (a faithful port,
+`skel2smpl.fit.optimize_shape` ≡ pose_estimation/kinematics/optimization.py:785-836), adapted
+per dataset via a marker-space kintree (`kintree_from_marker_bone`) so only OBSERVED direct
+bones are length-matched. β is FROZEN and the pose is solved with it
+(`fit_markers(fit_beta=False, bone_scale=None)`). ExPI uses the §P23.v surface-vertex path
+instead (β identifiable from the skin markers). Pure plain SMPL — no bone_scale, no scale.
 
 Frame contract (why a plain `SMPL.forward` reproduces the fit): `forward_R` returns
 `M·(FK+trans)` (M=_TRANS=Rx−90); `forward_proper` post-rotates by Q=RXP=Rx+90, and Q·M=I. So:
@@ -28,7 +29,8 @@ import torch
 import xml.etree.ElementTree as ET
 
 from skel2smpl.smpl import SMPL, _TRANS
-from skel2smpl.fit import fit_markers, forward_proper, fit_smpl_betas_limblen
+from skel2smpl.fit import (fit_markers, forward_proper, optimize_shape,
+                           kintree_from_marker_bone)
 from skel2smpl.geometry import exp_so3, rotation_matrix_to_axis_angle
 from skel2smpl.constants import _RX_NEG90, N_JOINTS
 from skel2smpl import datasets as D
@@ -44,10 +46,23 @@ BETA_REG = 0.3                               # optimizeShape L2-β prior (β-onl
 LAM_BETA_VERT = 1e-3                         # ExPI vertex-attach: β identifiable
 
 
+DEV = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # solvers run here
+
+
 def _smpl():
     if not hasattr(_smpl, "_m"):
         _smpl._m = SMPL()
     return _smpl._m
+
+
+def _smpl_gpu():
+    """SMPL with buffers on DEV — used only for the heavy solvers (fit_markers /
+    optimize_shape). Built under `torch.device(DEV)` so every buffer lands on the GPU
+    (no SMPL edit needed). Falls back to a CPU model when CUDA is absent."""
+    if not hasattr(_smpl_gpu, "_m"):
+        with torch.device(DEV):
+            _smpl_gpu._m = SMPL()
+    return _smpl_gpu._m
 
 
 # ───────────────────────── per-dataset performer markers ─────────────────────────
@@ -77,23 +92,29 @@ def load_performers(dataset, seq, nf):
 # ───────────────────────── plain-SMPL fit + boxing params ─────────────────────────
 def fit_to_boxing(markers, marker_bone, marker_vert):
     """Plain-SMPL fit → (aa_box[T,24,3], trans_box[T,3], beta, err_mm). bone_scale=None, s≈1."""
-    smpl = _smpl()
+    smpl = _smpl()                                           # CPU: forward_proper / err / I/O
+    smpl_g = _smpl_gpu()                                     # GPU: the heavy solvers
     mb = torch.as_tensor(marker_bone, dtype=torch.long)
-    if marker_vert is not None:                              # ExPI: β free via surface verts
-        pose, trans, beta, s, _ = fit_markers(
-            markers, mb, smpl, RXP, bone_scale=None, marker_vert=marker_vert,
-            lam_beta=LAM_BETA_VERT, lam_s=LAM_S_PIN)
-    else:                                                    # joint datasets: optimizeShape β, frozen
-        T = markers.shape[0]
-        obs22 = torch.zeros(T, N_JOINTS, 3, dtype=torch.float64)
-        obs22[:, mb] = markers.double()
-        obs_mask = torch.zeros(N_JOINTS, dtype=torch.bool)          # §P24 phantom-bone exclusion:
-        obs_mask[mb] = True                                         # 2C/LindyHop miss joints 9,12
-        beta0 = fit_smpl_betas_limblen(obs22, torch.zeros(T, N_JOINTS, 3, dtype=torch.float64),
-                                       smpl, lam_reg=BETA_REG, return_scale=False, obs_mask=obs_mask)
-        pose, trans, beta, s, _ = fit_markers(
-            markers, mb, smpl, RXP, bone_scale=None, betas_init=beta0, fit_beta=False,
-            lam_s=LAM_S_PIN)
+    mk = markers.to(DEV)                                     # markers on the solver device
+    mbd = mb.to(DEV)
+    # The two solvers run under `torch.device(DEV)` so every factory tensor lands on the GPU
+    # (fit.py has no device pins; fit_markers self-moves obs/mb/Q to the model device). lam_vp=0:
+    # §P24 plain-SMPL doesn't use the VPoser prior (already on-manifold) — also avoids its device path.
+    with torch.device(DEV):
+        if marker_vert is not None:                          # ExPI: β free via surface verts
+            mvd = marker_vert.to(DEV)
+            pose, trans, beta, s, _ = fit_markers(
+                mk, mbd, smpl_g, RXP, bone_scale=None, marker_vert=mvd,
+                lam_beta=LAM_BETA_VERT, lam_s=LAM_S_PIN, lam_vp=0.0)
+        else:                                                # joint datasets: optimizeShape β, frozen
+            # §P24: faithful EasyMocap optimizeShape, adapted per dataset via the marker-space
+            # kintree (from marker_bone → only OBSERVED direct bones, no phantom segment).
+            kintree = kintree_from_marker_bone(mb)
+            beta0 = optimize_shape(mk, kintree, mbd, smpl_g, lam_reg=BETA_REG)
+            pose, trans, beta, s, _ = fit_markers(
+                mk, mbd, smpl_g, RXP, bone_scale=None, betas_init=beta0, fit_beta=False,
+                lam_s=LAM_S_PIN, lam_vp=0.0)
+    pose, trans, beta = pose.cpu(), trans.cpu(), beta.cpu()  # back to CPU for the I/O below
     T = pose.shape[0]
     jp = forward_proper(smpl, pose, RXP, betas=beta, scale=1.0, root_target=trans, want_verts=False)
     err = (jp[:, mb] - markers.to(jp)).norm(dim=-1).mean().item() * 1000.0 if marker_vert is None \
