@@ -1,6 +1,19 @@
 # SESSION_CONTINUATION — 2026-06-19 — ACTIVE: §P24 convert all 4 datasets → boxing-format SMPL XML (skel2smpl runtime-free)
 
-## §P24 (ACTIVE, 2026-06-19) — boxing-XML conversion
+## §P24 (ACTIVE, 2026-06-19 PM) — optimizeShape-per-dataset + GPU landed
+- **DONE (commits `3c289e0`, `b6421cf`):** β now from a FAITHFUL `optimize_shape` port (EasyMocap
+  optimizeShape:785-836) adapted per dataset via `kintree_from_marker_bone` (marker→SMPL direct bones,
+  only observed → no phantom segment); keeps §P9 `spine_weight=0.1`. Solvers run on **GPU** (`_smpl_gpu`
+  + `with torch.device(DEV)`; fit.py device-correct at 3 const sites; `lam_vp=0`). 500f ≈ 5–7 s compute
+  (~15 s incl CUDA init), 45 MB VRAM. `fit_smpl_betas_limblen` kept (koopman tests).
+- **PILOTS (GPU, all G24a<0.003mm PASS, render upright/grounded):** 2C 42/50 ‖β‖1.97 · LindyHop 31/41
+  ‖β‖2.0 · Ninjutsu 46/38 ‖β‖1.9 · ExPI 56/44 ‖β‖1.4. Pilot XMLs in /tmp (NOT data/).
+- **AWAITING USER (G24c):** accept plain-SMPL → run full `--all` (~596 seqs, fast on GPU, writes
+  smpl.xml next to each source under data/), OR bone_scale off-ramp. Then P3 cutover `vizsys/smpl_fit.py`.
+- **Stale (re-Read):** `fit.py::optimize_shape`/`fit_markers`/`smpl_joint_limits` (device edits),
+  `to_boxing_xml.py::fit_to_boxing`/`_smpl_gpu`.
+
+## §P24 (earlier, 2026-06-19 AM) — boxing-XML conversion
 - **Goal (user):** "create SMPL format for all datasets; then we don't need skel2smpl anywhere — just like
   boxing for all pipelines." Convert 2C/ExPI/LindyHop/Ninjutsu → EXACT boxing `smpl.xml` (β+75-pose+trans),
   loaded by the UNCHANGED `pose_estimation/viz.py::smpl_xml_payload`. skel2smpl becomes an offline tool.
