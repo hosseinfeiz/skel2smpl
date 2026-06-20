@@ -1,5 +1,24 @@
 # SESSION_CONTINUATION — 2026-06-19 — ACTIVE: §P24 convert all 4 datasets → boxing-format SMPL XML (skel2smpl runtime-free)
 
+## §P24 Phase-3 cutover (ACTIVE, 2026-06-20) — viz loads processed XML, removing skel2smpl runtime use
+- **DONE (vizsys/smpl_fit.py, top-repo commit `be3d25c`):** `smpl_fit_payload` now LOADS the precomputed
+  boxing XML (flat `vr/data/<Name>/<rel>.xml`, or next-to-source fallback) and rebuilds both SMPL bodies
+  via `vizsys.smpl`; GT drawn from the XML `triangulated` (M=Rx(-90) applied to match the loader frame).
+  NO skel2smpl import, NO runtime fit. VERIFIED: `vr/viz expi --smpl --snapshot` renders 2 bodies + GT
+  overlay on the checkerboard. Resolver OK for expi/lindyhop/ninjutsu (203 flat XMLs).
+- **pose_estimation:** already loads XML via `viz.py::smpl_xml_payload`; does NOT import skel2smpl → nothing to do.
+- **OPEN — 2C:** never converted to `vr/data/2C/` (only the 3 datasets were). 80/95 stale next-to-source
+  `*_smpl.xml` exist (mixed, from the interrupted render batch). To finish: run the converter for 2c into
+  vr/data/2C/ (add '2c' to scratch_convert_xml ROOTS or use --all next-to-source). ~20 min GPU.
+- **OPEN — koopman (CONFLICT, needs user decision):** `koopman/viz.py` fits SMPL to FOUR seqs — GT
+  actor/reactor AND **predicted** actor/reactor. Predictions have NO precomputed XML (generated at viz
+  time) → cannot be replaced by loading XML. Koopman also uses skel2smpl as a MATH lib (se3_exp/log in
+  klib/motion_bridge/preprocess_bridges, adapters). So skel2smpl can't be removed from koopman without
+  (a) keeping runtime fit for predictions and (b) porting the math. Options: leave koopman on skel2smpl
+  (library), OR load XML only for koopman's GT bodies + keep fit for preds. SURFACED to user.
+- **OPEN — vizsys/skeletons.py:** re-exports skel2smpl BVH/worldpos I/O for the raw-GT payloads
+  (two_c/expi/remocap_payload in vr/viz). Removing = port the loaders into vizsys.
+
 ## §P24 (ACTIVE, 2026-06-19 PM) — optimizeShape-per-dataset + GPU landed
 - **DONE (commits `3c289e0`, `b6421cf`):** β now from a FAITHFUL `optimize_shape` port (EasyMocap
   optimizeShape:785-836) adapted per dataset via `kintree_from_marker_bone` (marker→SMPL direct bones,
