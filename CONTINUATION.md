@@ -1,21 +1,34 @@
-# SESSION_CONTINUATION — 2026-06-19 — ACTIVE: §P24 convert all 4 datasets → boxing-format SMPL XML (skel2smpl runtime-free)
+# SESSION_CONTINUATION — 2026-06-20 — §P24 ALL 4 DATASETS converted; vr/gps/pose_est load XML. ONLY OPEN: koopman Option B (deferred, dedicated session)
 
-## §P24 Phase-3 cutover (ACTIVE, 2026-06-20) — viz loads processed XML, removing skel2smpl runtime use
+## §P24 Phase-3 cutover (2026-06-20) — viz loads processed XML; all 4 datasets DONE, koopman-B is the one remaining task
 - **DONE (vizsys/smpl_fit.py, top-repo commit `be3d25c`):** `smpl_fit_payload` now LOADS the precomputed
   boxing XML (flat `vr/data/<Name>/<rel>.xml`, or next-to-source fallback) and rebuilds both SMPL bodies
   via `vizsys.smpl`; GT drawn from the XML `triangulated` (M=Rx(-90) applied to match the loader frame).
   NO skel2smpl import, NO runtime fit. VERIFIED: `vr/viz expi --smpl --snapshot` renders 2 bodies + GT
   overlay on the checkerboard. Resolver OK for expi/lindyhop/ninjutsu (203 flat XMLs).
 - **pose_estimation:** already loads XML via `viz.py::smpl_xml_payload`; does NOT import skel2smpl → nothing to do.
-- **OPEN — 2C:** never converted to `vr/data/2C/` (only the 3 datasets were). 80/95 stale next-to-source
-  `*_smpl.xml` exist (mixed, from the interrupted render batch). To finish: run the converter for 2c into
-  vr/data/2C/ (add '2c' to scratch_convert_xml ROOTS or use --all next-to-source). ~20 min GPU.
-- **OPEN — koopman (CONFLICT, needs user decision):** `koopman/viz.py` fits SMPL to FOUR seqs — GT
-  actor/reactor AND **predicted** actor/reactor. Predictions have NO precomputed XML (generated at viz
-  time) → cannot be replaced by loading XML. Koopman also uses skel2smpl as a MATH lib (se3_exp/log in
-  klib/motion_bridge/preprocess_bridges, adapters). So skel2smpl can't be removed from koopman without
-  (a) keeping runtime fit for predictions and (b) porting the math. Options: leave koopman on skel2smpl
-  (library), OR load XML only for koopman's GT bodies + keep fit for preds. SURFACED to user.
+- **DONE — 2C (2026-06-20):** all 95 `_C0.bvh` seqs converted → `vr/data/2C/<action>__<clip>.xml`
+  (flat store, key matches `vizsys/smpl_fit.py::_flat_name`). Driver: `scratch_convert_xml.py` (added
+  `"2c"` to ROOTS + a 2c branch in `out_path` that strips `_C0.bvh` to match the resolver). Run: 94 OK
+  + 1 smoke, 0 fail, 34.9 min GPU (~25 s/seq, ~45 MB VRAM). Numbers match the §P24 pilot (2C 42/50 mm,
+  ‖β‖1.97, s=1.0). VERIFIED G24b (`_resolve_xml` finds the flat key) + G24c/G24d (`vr/viz 2c --smpl
+  --snapshot` renders 2 upright plausible bodies from the precomputed XML, GT green markers overlay, NO
+  skel2smpl fit). All 4 datasets now load precomputed boxing XML. `scratch_convert_xml.py` stays
+  uncommitted (scratch); `vr/data/2C/*.xml` is gitignored data → nothing to commit for the conversion.
+- **DECIDED — koopman = Option B (user, 2026-06-20), DEFERRED to a dedicated koopman session.**
+  `koopman/viz.py` fits SMPL to FOUR seqs (GT + **predicted** actor/reactor). Preds are generated at viz
+  time → keep runtime fit. User chose **B: load precomputed boxing XML for the two GT bodies, keep the
+  fit for preds.** Koopman also uses skel2smpl as a MATH lib (se3_exp/log in klib / preprocess_bridges /
+  adapters) → skel2smpl stays a koopman runtime dep regardless; B only removes the GT-body fit.
+  **MAPPING (verified):** each `seq_data` (from `data/train.pt`) carries `shot_id`; boxing XML is keyed
+  by it at `vr/data/BOXING_DATASET/{old,new}/<shot_id>/optimization/smpl.xml`. **OPEN DESIGN (the real
+  work in B, NOT the XML load):** koopman GT body = FK of the 132-D `actor_body` (boxing motion AFTER
+  koopman preprocessing: root-relative `actor_mean/std` norm, placed in world via `actor_head_global`);
+  boxing XML is the same motion in boxing's RAW world frame. B must re-derive the boxing-world →
+  koopman-frame transform so the loaded GT stays co-located with the predicted body. Could NOT verify
+  frame equivalence without tracing `preprocess_bridges` — that trace + render-check is the B task.
+  Governed by `KOOPMAN_MASTER_PLAN.md` (read `SESSION_CONTINUATION.md` + targeted § first, per koopman
+  CLAUDE.md). NEXT-SESSION FIRST STEP.
 - **OPEN — vizsys/skeletons.py:** re-exports skel2smpl BVH/worldpos I/O for the raw-GT payloads
   (two_c/expi/remocap_payload in vr/viz). Removing = port the loaders into vizsys.
 
