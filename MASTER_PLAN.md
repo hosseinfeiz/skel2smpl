@@ -1814,6 +1814,25 @@ reprojection optimum, so it holds home-field advantage on this ruler; landing in
 (t 0.48 / 1.39) is the best outcome available to any fit. The claim is that the convention error
 is removed at NO cost in 2D fidelity — which is exactly what `delta` could not do.
 
+**THE KINEMATIC FLOOR, RE-MEASURED — the contradiction that killed §P25 is GONE**
+(`pose_estimation/tests/probe_body25_floor.py 60 <arm>`; the baseline rows reproduced EXACTLY
+at 27.15 / 60.22 mm, confirming the pure-Python exporter is deterministic across these runs):
+
+| arm | floor p0 | reproj p0 | floor p1 | reproj p1 |
+|---|---|---|---|---|
+| `delta` | 27.15 → 13.20 (**−13.95**) | **+13.1 … +16.2 mm** | 60.22 → 55.82 (**−4.40**) | **+3.7 … +4.6 mm** |
+| `regressor-bs` | 27.15 → **8.70** (**−18.45**) | +1.6 … +1.9 mm | 60.22 → **53.16** (**−7.06**) | −0.2 … −0.3 mm |
+
+`delta`'s floor gain was CANCELLED — sign-flipped, same magnitude — by the independent ruler:
+that is the rigidity confound. `regressor-bs` posts a LARGER floor gain (−18.45 vs −13.95 on p0)
+while the independent ruler shows essentially nothing. Frame-0 IK rms 26.19 → 9.11 mm on p0.
+
+**Say this precisely: the floor is now UNREFUTED, not CORROBORATED.** Reprojection cannot
+confirm a gain here — raw triangulation is already the 4-view reprojection optimum, so the best
+available reading from that ruler is "no loss". p1's floor is still **53 mm** (worst rshoulder
+101 mm): the fixed-shape humanoid does not fit that boxer's arms, and nothing here rescales the
+body — the same open number `POSE/CLAUDE.md` already records.
+
 **STILL OPEN: gate 2 (NOT RENDERED)** — this package's hard rule stands, a low residual is
 necessary and not sufficient. And nothing has landed in POSE: `physics/markers.py:
 body25_to_markers` is still the default `mpos` path. The §P25 kinematic-floor table has NOT
