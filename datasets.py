@@ -283,9 +283,53 @@ def fit_remocap(worldpos_csv, max_frames=200):
     return Fit(jp, vp, faces, err, markers.float(), _remo_edges(obsv))
 
 
+# ═══════════════════════ BODY25 — OpenPose/ViTPose 25 keypoints (§P25) ═══════════════════════
+# Triangulated 2D-pose keypoints, NOT mocap: they are landmark ESTIMATES with systematic
+# convention offsets from the SMPL joint centres (measured on boxing/refine500: hips 67-73 mm
+# too WIDE, shoulders 42 mm too NARROW, BigToe is the toe TIP not the MTP joint). The free
+# MoSh offset delta_m is exactly the right home for those, which is why this is a fit and not
+# an index remap. Attach rules follow §P23: hips -> PELVIS (0), never the femur, or an
+# ASIS-like lateral landmark swings with the thigh; ears/nose -> head (15).
+BODY25_NOSE, BODY25_NECK, BODY25_MIDHIP = 0, 1, 8
+BODY25_MARKER_BONE = {0: 15, 1: 12, 2: 17, 3: 19, 4: 21, 5: 16, 6: 18, 7: 20, 8: 0,
+                      9: 0, 10: 5, 11: 8, 12: 0, 13: 4, 14: 7, 17: 15, 18: 15,
+                      19: 11, 21: 8, 22: 11, 24: 8}
+BODY25_MARKERS = tuple(sorted(BODY25_MARKER_BONE))
+BODY25_BONE = [BODY25_MARKER_BONE[j] for j in BODY25_MARKERS]
+# §P14 length retarget. Limbs only -- FEET EXCLUDED (heel->BigToe is foot LENGTH, not the
+# ankle->ball bone; including it gives alien feet, §P23). Indices are into BODY25_MARKERS.
+_B25 = {j: i for i, j in enumerate(BODY25_MARKERS)}
+BODY25_BONE_SEG = {18: (_B25[5], _B25[6]), 20: (_B25[6], _B25[7]),
+                   19: (_B25[2], _B25[3]), 21: (_B25[3], _B25[4]),
+                   4: (_B25[12], _B25[13]), 7: (_B25[13], _B25[14]),
+                   5: (_B25[9], _B25[10]), 8: (_B25[10], _B25[11])}
+BODY25_MARKER_EDGES = [(i, j) for i in range(len(BODY25_MARKERS))
+                       for j in range(len(BODY25_MARKERS))
+                       if SMPL_PARENTS[BODY25_BONE[j]] == BODY25_BONE[i]]
+
+
+def fit_body25(joints, max_frames=None, lam_beta=1.0):
+    """Fit SMPL to triangulated BODY25 joints (§P25). `joints` [T,25,3] in METRES.
+
+    FRAME (measured, not assumed): the root orientation is free, so the solve is frame-
+    agnostic and the returned joints come back in the SAME frame the observations arrived
+    in. Feeding Z-up and Y-up scored 42.71 vs 42.68 mm on boxing/refine500 p1 -- the frame
+    gate does NOT discriminate here, unlike §P23's ExPI case. Pass the frame you want back.
+    Confidence-zero keypoints must be filled by the caller."""
+    x = torch.as_tensor(np.asarray(joints, np.float64))
+    if max_frames:
+        x = x[:max_frames]
+    markers = x[:, list(BODY25_MARKERS)]
+    mb = torch.tensor(BODY25_BONE, dtype=torch.long)
+    bs = marker_bone_scale(markers, BODY25_BONE_SEG)
+    jp, vp, faces, err, vm = fit_smpl_markers(markers, mb, bone_scale=bs, lam_beta=lam_beta)
+    return Fit(jp, vp, faces, err, markers.float(), BODY25_MARKER_EDGES), vm
+
+
 # ═══════════════════════ registry ═══════════════════════
 # name -> (fit-one-performer fn). LindyHop and Ninjutsu share the ReMoCap recipe.
-DATASETS = {"2c": fit_2c, "expi": fit_expi, "lindyhop": fit_remocap, "ninjutsu": fit_remocap}
+DATASETS = {"2c": fit_2c, "expi": fit_expi, "lindyhop": fit_remocap, "ninjutsu": fit_remocap,
+            "body25": fit_body25}
 
 
 def fit_dataset(name, path, **kw):

@@ -1692,3 +1692,54 @@ not this fitting module. Cross-refs to §P8 below point back to that plan.
 - **Note:** this is VIZ/mesh fidelity, orthogonal to the model target. Does NOT change
   `body_log` (the model still predicts SO(3) per P8); β only reshapes the displayed mesh.
 
+### P25 — BODY25 (OpenPose/ViTPose 25-keypoint) → SMPL joint centres, for physics marker tracking [extends §P23] (2026-08-16)
+
+**Why.** `pose_estimation`'s Stage-4 physics tracker (`PHYSICS/cpp/trk`) drives a MuJoCo humanoid
+whose 16 `tracking[*]` sites sit at BODY ORIGINS — i.e. SMPL JOINT CENTRES (verified: every site's
+local offset is `[0,0,0]`). It was being fed raw triangulated BODY25 landmarks, which are a
+DIFFERENT convention. Measured on boxing/refine500, marker segment vs the humanoid's own:
+hip width **+73.5 mm**, shoulder width **−46.9 mm**, heel→BigToe **+43.6 mm** (BigToe is the toe
+TIP, the site is the MTP joint). Signs disagree, so no uniform rescale fixes it. §P23's
+`fit_markers` is exactly the right instrument: free per-marker offset `δ_m` absorbs the
+convention, `bone_scale` keeps the subject's real proportions, and the OUTPUT is SMPL-22 joint
+centres — the humanoid's own convention.
+
+**Correspondence** (`BODY25_MARKER_BONE`). Follows §P23's settled rule: hips → PELVIS (0), never
+the femur, since the BODY25 hip keypoint is lateral (ASIS-like) and would swing with the thigh.
+Nose/ears → head (15), neck → 12, shoulders → 16/17, elbows → 18/19, wrists → 20/21, knees → 4/5,
+ankles AND heels → 7/8, BigToes → 10/11, MidHip → 0. Joints 15/16 (eyes) and 20/23 (small toes)
+are unused. `BODY25_BONE_SEG` excludes the feet (§P23: heel→toe is foot LENGTH, not the
+ankle→ball bone).
+
+**FRAME — measured, and it does NOT behave like §P23's ExPI case.** The root orientation is free,
+so the solve is frame-agnostic: Z-up and Y-up observations scored **42.71 vs 42.68 mm** on p1.
+The returned joints come back in the frame the observations arrived in. The §P23 "silent frame
+bug" gate (36.69 vs 6.69 mm) does not fire here and must not be quoted as if it validated
+anything. `fit_body25` therefore passes the frame through.
+
+**MEASURED (boxing/refine500, 60 keys, `pose_estimation/tests/probe_body25_smpl.py` and
+`probe_body25_floor.py`).** Mean |segment deviation from the humanoid|, and the tracker's
+kinematic floor (the exporter's pure-Python IK, chosen because it is provably independent of
+PHYSICS's churning binary):
+
+| | segment dev | kinematic floor |
+|---|---|---|
+| p0 raw BODY25 | 23.1 mm | 27.15 mm |
+| p0 §P25 SMPL joints | **9.2 mm** | **13.20 mm** |
+| p1 raw BODY25 | 27.4 mm | 60.22 mm |
+| p1 §P25 SMPL joints | **12.1 mm** | **55.82 mm** |
+
+The convention terms collapse to <1.5 mm of the humanoid (hip width +73.5 → +0.6, shoulder width
+−46.9 → +1.4, foot +43.6 → +0.6) while the subject's REAL proportions are preserved (p1's long
+femur stays +43.5 → +45.4). That asymmetry is what distinguishes this from a solver that simply
+flattens the reference onto the model.
+
+**NOT ACCEPTED YET — three gates are open and the phase does not close until they pass:**
+1. **§P23's own gate FAILS**: the fit's marker residual is **46.70 mm (p0) / 42.71 mm (p1)**,
+   against the ≤30 mm bar. The SMPL body does not yet explain the BODY25 observations.
+2. **NOT RENDERED.** This package's hard rule — a low residual is necessary, not sufficient.
+3. **The rigidity confound is unmeasured.** The output is a rigid SMPL body, so a rigid humanoid
+   will fit it better almost by construction; part of the floor gain may measure "the input
+   became rigid", not "the input became correct". The discriminating test is reprojecting the
+   fit's own predicted landmarks (`vm`) against the source 2D — NOT yet run. Until it is, the
+   floor numbers above are suggestive, not a verdict.
