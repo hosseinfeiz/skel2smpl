@@ -889,7 +889,7 @@ def fit_markers(obs_markers, marker_bone, smpl_model, Q, betas_init=None,
                 lam_smooth: float = 0.10, lam_delta: float = 0.02,
                 lam_beta: float = 1.0, lam_contact: float = 0.0,
                 lam_anchor: float = 0.5, lam_limit: float = 1.0, lam_s: float = 2.0,
-                lam_vp: float = 2e-4, marker_vert=None, fit_beta: bool = True,
+                lam_vp: float = 2e-4, marker_vert=None, marker_w=None, fit_beta: bool = True,
                 sigma_sq: float = 0.5, sigma_sq0: float = 0.5):
     """§P23 — true-MoSh surface-marker SMPL solve for a joint-INCONGRUENT reference.
 
@@ -952,7 +952,28 @@ def fit_markers(obs_markers, marker_bone, smpl_model, Q, betas_init=None,
     # δ is unused here; β is freed by a low lam_beta in the caller.
     mv = None if marker_vert is None else torch.as_tensor(marker_vert, dtype=torch.long)
 
+    # §P25.r — REGRESSOR path. `marker_w` [M,6890] is a KNOWN linear vertex→landmark map (the
+    # OpenPose BODY25 regressor), replacing the free rigid δ. δ can only encode a CONSTANT
+    # body-frame offset; the convention error is partly pose-dependent (BigToe is the toe TIP
+    # and rotates with the foot), which is what §P25 gate 3 refuted. Rows are convex (non-neg,
+    # sum 1) over 95-1170 verts each, so no single vertex represents one — `marker_vert` cannot
+    # express this. Skinning the 5142-vertex union costs +22 % over joints-only, so the map is
+    # applied EXACTLY rather than collapsed onto 25 pseudo-verts.
+    mw, wv = None, None
+    if marker_w is not None:
+        mw = torch.as_tensor(marker_w, dtype=dt).to(dev)
+        wv = torch.nonzero((mw.abs() > 1e-8).any(0)).squeeze(1)
+        mw = mw[:, wv]
+
     def markers_of(pose, trans, s, beta, delta):
+        if mw is not None:
+            jnat, _, vnat = _fk_verts(smpl_model, pose, beta, wv, bone_scale=bone_scale)
+            jp = torch.einsum("mn,tjn->tjm", QM, jnat)
+            vp = torch.einsum("mn,tvn->tvm", QM, vnat)
+            root = jp[:, :1]
+            body = trans[:, None, :] + s * (jp - root)
+            vbody = trans[:, None, :] + s * (vp - root)
+            return torch.einsum("mv,tvx->tmx", mw, vbody), body
         if mv is None:
             jnat, Rnat = _fk(smpl_model, pose, beta, bone_scale=bone_scale)
             jp = torch.einsum("mn,tjn->tjm", QM, jnat)

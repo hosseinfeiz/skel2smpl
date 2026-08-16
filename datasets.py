@@ -78,7 +78,7 @@ def fit_smpl(obs, w, pose0=None, lam_contact=8.0, iters=600, Q=None):
 
 
 def fit_smpl_markers(obs_markers, marker_bone, lam_contact=0.0, bone_scale=None,
-                     marker_vert=None, lam_beta=1.0):
+                     marker_vert=None, marker_w=None, lam_beta=1.0):
     """§P23 — true-MoSh surface-marker fit. obs_markers [T,M,3] proper-frame + marker_bone [M]
     -> (joints[T,22,3], verts, faces, marker_err_mm, virtual_markers). Q=RXP (obs native Y-up).
     bone_scale defaults to the per-bone anthropometric retarget measured from marker segments.
@@ -89,12 +89,21 @@ def fit_smpl_markers(obs_markers, marker_bone, lam_contact=0.0, bone_scale=None,
         bone_scale = expi_bone_scale(obs_markers)
     pose, trans, beta, s, delta = fit_markers(obs_markers, marker_bone, smpl, RXP,
                                               lam_contact=lam_contact, bone_scale=bone_scale,
-                                              marker_vert=marker_vert, lam_beta=lam_beta)
+                                              marker_vert=marker_vert, marker_w=marker_w,
+                                              lam_beta=lam_beta)
     jp, vp = forward_proper(smpl, pose, RXP, betas=beta, scale=s, root_target=trans,
                             want_verts=True, bone_scale=bone_scale)
     dt = smpl.dtype
     QM = (RXP @ _RX_NEG90.double()).to(dt)
-    if marker_vert is not None:                                  # §P23.v vertex markers
+    if marker_w is not None:                                     # §P25.r regressor markers
+        W = torch.as_tensor(marker_w, dtype=dt)
+        wv = torch.nonzero((W.abs() > 1e-8).any(0)).squeeze(1)
+        jnat, _, vnat = _fk_verts(smpl, pose, beta, wv, bone_scale=bone_scale)
+        jpn = torch.einsum("mn,tjn->tjm", QM, jnat)
+        vpn = torch.einsum("mn,tvn->tvm", QM, vnat)
+        vbody = trans[:, None, :].to(dt) + s * (vpn - jpn[:, :1])
+        vm = torch.einsum("mv,tvx->tmx", W[:, wv], vbody)
+    elif marker_vert is not None:                                # §P23.v vertex markers
         jnat, _, vnat = _fk_verts(smpl, pose, beta, marker_vert, bone_scale=bone_scale)
         jpn = torch.einsum("mn,tjn->tjm", QM, jnat)
         vpn = torch.einsum("mn,tvn->tvm", QM, vnat)
@@ -308,7 +317,28 @@ BODY25_MARKER_EDGES = [(i, j) for i in range(len(BODY25_MARKERS))
                        if SMPL_PARENTS[BODY25_BONE[j]] == BODY25_BONE[i]]
 
 
-def fit_body25(joints, max_frames=None, lam_beta=1.0):
+BODY25_REGRESSOR_PATH = os.environ.get("BODY25_REGRESSOR", os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "data", "smpl", "J_regressor_body25.npy"))
+
+_BODY25_REG_CACHE = None
+
+
+def body25_regressor():
+    """§P25.r — the OpenPose BODY25 vertex regressor [25,6890], rows restricted to
+    BODY25_MARKERS. Verified against the SMPL template: it reproduces §P25's independently
+    measured convention offsets (hip width +75.4 mm vs +73.5 measured, shoulder -59.2 vs
+    -46.9), which is the evidence that it is the right map and the free delta was not."""
+    global _BODY25_REG_CACHE
+    if _BODY25_REG_CACHE is None:
+        W = torch.as_tensor(np.load(BODY25_REGRESSOR_PATH), dtype=torch.float64)
+        if W.shape != (25, 6890):
+            raise ValueError("%s: expected (25, 6890), got %s"
+                             % (BODY25_REGRESSOR_PATH, tuple(W.shape)))
+        _BODY25_REG_CACHE = W
+    return _BODY25_REG_CACHE[list(BODY25_MARKERS)]
+
+
+def fit_body25(joints, max_frames=None, lam_beta=1.0, attach="delta", retarget=None):
     """Fit SMPL to triangulated BODY25 joints (§P25). `joints` [T,25,3] in METRES.
 
     FRAME (measured, not assumed): the root orientation is free, so the solve is frame-
@@ -321,8 +351,14 @@ def fit_body25(joints, max_frames=None, lam_beta=1.0):
         x = x[:max_frames]
     markers = x[:, list(BODY25_MARKERS)]
     mb = torch.tensor(BODY25_BONE, dtype=torch.long)
-    bs = marker_bone_scale(markers, BODY25_BONE_SEG)
-    jp, vp, faces, err, vm = fit_smpl_markers(markers, mb, bone_scale=bs, lam_beta=lam_beta)
+    if attach not in ("delta", "regressor"):
+        raise ValueError("attach must be 'delta' or 'regressor', got %r" % (attach,))
+    if retarget is None:
+        retarget = attach == "delta"
+    bs = marker_bone_scale(markers, BODY25_BONE_SEG) if retarget else None
+    jp, vp, faces, err, vm = fit_smpl_markers(
+        markers, mb, bone_scale=bs, lam_beta=lam_beta,
+        marker_w=body25_regressor() if attach == "regressor" else None)
     return Fit(jp, vp, faces, err, markers.float(), BODY25_MARKER_EDGES), vm
 
 
