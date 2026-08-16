@@ -1773,7 +1773,55 @@ flattens the reference onto the model.
 remap) stays the default. The kinematic-floor numbers in the table above are WITHDRAWN as
 evidence of accuracy; they measure rigidity.
 
-**Next arm, if this direction is resumed — replace the free δ with the BODY25 regressor.** §P25
+### §P25.r — the fix: attach via the KNOWN vertex regressor, not a free rigid δ (2026-08-16)
+
+**Gates 1 and 3 both flip to PASS.** `fit_markers(marker_w=…)` replaces δ with
+`J_regressor_body25` — a convex [25,6890] vertex→landmark map, applied EXACTLY over the
+5142-vertex union support (skinning it costs **+22 %** over joints-only at T=60, so the
+collapsed 25-pseudo-vertex approximation `pose_estimation/src/smpl_model.py:301` uses is
+unnecessary and is NOT used). **`marker_vert` cannot express this** — regressor rows span
+**95–1170 vertices** each (non-negative, summing to 1, max single weight 0.029), and a BODY25
+keypoint is an INTERIOR joint-centre estimate no surface vertex sits at. The earlier note
+pointing at `marker_vert` as the hook was wrong on mechanism.
+
+**The map is verified, not assumed.** Regressing the SMPL template reproduces §P25's
+independently measured convention offsets: hip width **+75.4 mm** (measured on refine500:
++73.5), shoulder width **−59.2 mm** (measured: −46.9). Two unrelated sources, hips agreeing to
+1.9 mm. Keypoint order confirmed OpenPose BODY25.
+
+**MEASURED — refine500, 60 keys, 4 views, conf≥0.4, 21 markers, `tracks` calib, like-for-like
+against the same raw BODY25** (`pose_estimation/tests/probe_body25_reproj.py --arm …`):
+
+| arm | gate 3 reproj vs raw | std | t | marker residual | gate 1 (≤30 mm) |
+|---|---|---|---|---|---|
+| `delta` (§P25 as proposed) | **+1.429 px** | 1.185 | +3.41 | 46.71 / 42.62 mm | FAIL |
+| `regressor` | **+0.116 px** | 0.684 | +0.48 | 25.92 / 22.19 mm | PASS |
+| `regressor-bs` (DEFAULT) | **+0.115 px** | 0.234 | +1.39 | **16.64 / 14.26 mm** | PASS |
+
+Paired improvement δ→regressor **1.312 px** (t 2.99), 7 of 8 view/person rows better. The
+`delta` baseline reproduced at +1.43 after the call-site refactor (committed value +1.42), so
+the arms are comparable.
+
+**ATTRIBUTION (why the third arm exists).** `regressor` and `regressor-bs` differ ONLY in the
+§P14 `bone_scale` retarget, and their gate-3 means are identical (+0.116 vs +0.115). So
+**the regressor attach owns the whole gate-3 gain; `bone_scale` owns none of it.** What
+`bone_scale` does buy is marker residual (25.9 → 16.6 / 22.2 → 14.3 mm) and a 3.1× tighter
+ruler spread. Both are on by default (invariant 3).
+
+**Reading the +0.12 px honestly.** This is a PASS on "the fit no longer distorts the pose", not
+a demonstration that it beats the triangulation. Raw triangulation IS the 4-view least-squares
+reprojection optimum, so it holds home-field advantage on this ruler; landing inside its spread
+(t 0.48 / 1.39) is the best outcome available to any fit. The claim is that the convention error
+is removed at NO cost in 2D fidelity — which is exactly what `delta` could not do.
+
+**STILL OPEN: gate 2 (NOT RENDERED)** — this package's hard rule stands, a low residual is
+necessary and not sufficient. And nothing has landed in POSE: `physics/markers.py:
+body25_to_markers` is still the default `mpos` path. The §P25 kinematic-floor table has NOT
+been re-measured on the regressor arm.
+
+---
+
+**Superseded note (kept for the record) — replace the free δ with the BODY25 regressor.** §P25
 answers "where does a BODY25 keypoint sit on an SMPL body?" with a free per-marker offset δ that
 is RIGID in the bone frame. That is the weaker of two available answers: `J_regressor_body25.npy`
 (verified present, shape **(25, 6890)**, float32) is a KNOWN vertex→BODY25 map already used by

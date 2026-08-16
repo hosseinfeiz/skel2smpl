@@ -338,14 +338,22 @@ def body25_regressor():
     return _BODY25_REG_CACHE[list(BODY25_MARKERS)]
 
 
-def fit_body25(joints, max_frames=None, lam_beta=1.0, attach="delta", retarget=None):
+def fit_body25(joints, max_frames=None, lam_beta=1e-3, attach="regressor", retarget=True):
     """Fit SMPL to triangulated BODY25 joints (§P25). `joints` [T,25,3] in METRES.
 
     FRAME (measured, not assumed): the root orientation is free, so the solve is frame-
     agnostic and the returned joints come back in the SAME frame the observations arrived
     in. Feeding Z-up and Y-up scored 42.71 vs 42.68 mm on boxing/refine500 p1 -- the frame
     gate does NOT discriminate here, unlike §P23's ExPI case. Pass the frame you want back.
-    Confidence-zero keypoints must be filled by the caller."""
+    Confidence-zero keypoints must be filled by the caller.
+
+    ATTACH (§P25.r, measured on refine500 / 60 keys / 4 views by the INDEPENDENT
+    reprojection ruler, `pose_estimation/tests/probe_body25_reproj.py`): `regressor` is the
+    default because `delta` -- a FREE offset held rigid in the bone frame -- reprojects
+    +1.43 px WORSE than the raw BODY25 it was fitted to (t 3.41), while the known vertex
+    regressor lands at +0.12 px, i.e. no distortion. `retarget` does not move that mean
+    (+0.116 vs +0.115) but cuts the marker residual 25.9 -> 16.6 mm and the ruler's spread
+    3.1x, so both are on."""
     x = torch.as_tensor(np.asarray(joints, np.float64))
     if max_frames:
         x = x[:max_frames]
