@@ -78,7 +78,7 @@ def fit_smpl(obs, w, pose0=None, lam_contact=8.0, iters=600, Q=None):
 
 
 def fit_smpl_markers(obs_markers, marker_bone, lam_contact=0.0, bone_scale=None,
-                     marker_vert=None, marker_w=None, lam_beta=1.0):
+                     marker_vert=None, marker_w=None, lam_beta=1.0, return_shape=False):
     """§P23 — true-MoSh surface-marker fit. obs_markers [T,M,3] proper-frame + marker_bone [M]
     -> (joints[T,22,3], verts, faces, marker_err_mm, virtual_markers). Q=RXP (obs native Y-up).
     bone_scale defaults to the per-bone anthropometric retarget measured from marker segments.
@@ -114,6 +114,10 @@ def fit_smpl_markers(obs_markers, marker_bone, lam_contact=0.0, bone_scale=None,
         mb = torch.as_tensor(marker_bone, dtype=torch.long)
         vm = jp.to(dt)[:, mb] + s * torch.einsum("tmkl,ml->tmk", Reff[:, mb], delta.to(dt))
     err = (vm - obs_markers.to(dt)).norm(dim=-1).mean().item() * 1000.0
+    if return_shape:
+        return (jp.float(), vp.float(), smpl.faces, err, vm.float(),
+                dict(beta=beta.detach().cpu().numpy(), scale=float(s),
+                     bone_scale=np.asarray(bone_scale, np.float64)))
     return jp.float(), vp.float(), smpl.faces, err, vm.float()
 
 
@@ -336,6 +340,20 @@ def body25_regressor():
                              % (BODY25_REGRESSOR_PATH, tuple(W.shape)))
         _BODY25_REG_CACHE = W
     return _BODY25_REG_CACHE[list(BODY25_MARKERS)]
+
+
+def body25_shape(joints, max_frames=None, lam_beta=1e-3):
+    """§P25.r — the boxer's SMPL shape (beta, uniform scale, per-bone retarget) from the same
+    fit `fit_body25` runs, for building a PER-SUBJECT physics body. The generic humanoid is
+    neither boxer: on refine500 that is what leaves p1's tracked residual above p0's."""
+    x = torch.as_tensor(np.asarray(joints, np.float64))
+    if max_frames:
+        x = x[:max_frames]
+    markers = x[:, list(BODY25_MARKERS)]
+    mb = torch.tensor(BODY25_BONE, dtype=torch.long)
+    bs = marker_bone_scale(markers, BODY25_BONE_SEG)
+    return fit_smpl_markers(markers, mb, bone_scale=bs, lam_beta=lam_beta,
+                            marker_w=body25_regressor(), return_shape=True)[5]
 
 
 def fit_body25(joints, max_frames=None, lam_beta=1e-3, attach="regressor", retarget=True):
