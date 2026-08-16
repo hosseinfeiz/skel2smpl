@@ -1738,8 +1738,49 @@ flattens the reference onto the model.
 1. **§P23's own gate FAILS**: the fit's marker residual is **46.70 mm (p0) / 42.71 mm (p1)**,
    against the ≤30 mm bar. The SMPL body does not yet explain the BODY25 observations.
 2. **NOT RENDERED.** This package's hard rule — a low residual is necessary, not sufficient.
-3. **The rigidity confound is unmeasured.** The output is a rigid SMPL body, so a rigid humanoid
-   will fit it better almost by construction; part of the floor gain may measure "the input
-   became rigid", not "the input became correct". The discriminating test is reprojecting the
-   fit's own predicted landmarks (`vm`) against the source 2D — NOT yet run. Until it is, the
-   floor numbers above are suggestive, not a verdict.
+3. **The rigidity confound is MEASURED, and it is REAL — the floor gain is REFUTED**
+   (`pose_estimation/tests/probe_body25_reproj.py`, boxing/refine500, 60 keys, 4 views,
+   conf≥0.4, 21 markers, `tracks` calibration). `vm` — the fit's own predicted BODY25
+   landmarks, `joint + s·R_bone·δ`, so both arms are scored in the SAME BODY25 convention —
+   reprojected against `pose/*.xml` 2D versus the raw triangulated BODY25 it was fitted to:
+
+   | | P25 fit | raw BODY25 | delta |
+   |---|---|---|---|
+   | p0, mean of 4 views | | | **+2.21 px** (+13.1 … +16.2 mm) |
+   | p1, mean of 4 views | | | **+0.63 px** (+3.7 … +4.6 mm) |
+   | all 8 view/person rows | | | **+1.42 px**, std 1.19, sem 0.42, t 3.39, 7/8 positive |
+
+   **The two rulers disagree by the size of the claimed gain, with the sign flipped.** The
+   kinematic floor says p0 improved 13.95 mm (27.15 → 13.20); reprojection says p0 got
+   13.1–16.2 mm WORSE. p1: floor −4.40 mm, reprojection +3.7…+4.6 mm. Gains and losses track
+   each other person-by-person. The floor was measuring "the input became rigid, so the rigid
+   humanoid's IK fits it better" — NOT "the input became correct".
+
+   The ruler is sharp enough to have seen it: 5.9–7.3 mm/px on this session, and this is the
+   same instrument that returned −0.26 ± 0.83 px for STAC and was correctly called "inside the
+   spread". Here it returns +1.42 ± 1.19 with 7 of 8 rows the same sign.
+
+   Raw triangulation holds home-field advantage on a reprojection ruler by construction — it IS
+   the 4-view least-squares reprojection optimum — so a small positive delta was expected. Home
+   field predicts the fit loses SLIGHTLY; it does not predict the loss landing on top of the
+   claimed gain. Caveat: 60 keys, not the full 500.
+
+   The §P25 segment-geometry result is unaffected and stands (23.1 → 9.2 mm, 27.4 → 12.1 mm vs
+   the humanoid). It simply does not buy 2D fidelity.
+
+**VERDICT: §P25 MUST NOT LAND as the default `mpos` path.** All three gates are open — 1 fails,
+2 is unrendered, 3 is refuted. `pose_estimation/physics/markers.py:body25_to_markers` (the index
+remap) stays the default. The kinematic-floor numbers in the table above are WITHDRAWN as
+evidence of accuracy; they measure rigidity.
+
+**Next arm, if this direction is resumed — replace the free δ with the BODY25 regressor.** §P25
+answers "where does a BODY25 keypoint sit on an SMPL body?" with a free per-marker offset δ that
+is RIGID in the bone frame. That is the weaker of two available answers: `J_regressor_body25.npy`
+(verified present, shape **(25, 6890)**, float32) is a KNOWN vertex→BODY25 map already used by
+`pose_estimation/src/smpl_model.py:301`. A rigid δ can only represent a CONSTANT offset, but the
+convention errors are partly pose-dependent (BigToe is the toe TIP and rotates with the foot; the
+ASIS-like hip landmark moves with the thigh and soft tissue), which is a plausible cause of gate
+1's 42–47 mm residual and is the same rigidity assumption STAC failed on p1 in `POSE/CLAUDE.md`
+(offset drifted 25.0 mm between halves, rshoulder 81 mm). UNMEASURED — a hypothesis, not a
+result. §P23.v's `marker_vert` path is the existing hook (it relaxes `lam_beta` so β is
+identifiable).
