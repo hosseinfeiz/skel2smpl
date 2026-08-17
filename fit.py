@@ -890,7 +890,9 @@ def fit_markers(obs_markers, marker_bone, smpl_model, Q, betas_init=None,
                 lam_beta: float = 1.0, lam_contact: float = 0.0,
                 lam_anchor: float = 0.5, lam_limit: float = 1.0, lam_s: float = 2.0,
                 lam_vp: float = 2e-4, marker_vert=None, marker_w=None, fit_beta: bool = True,
-                sigma_sq: float = 0.5, sigma_sq0: float = 0.5):
+                sigma_sq: float = 0.5, sigma_sq0: float = 0.5,
+                s_init=None, fit_s: bool = True, delta_init=None, fit_delta: bool = True,
+                pose_init=None, trans_init=None):
     """§P23 — true-MoSh surface-marker SMPL solve for a joint-INCONGRUENT reference.
 
     The reference points are SURFACE markers, NOT SMPL joints (ExPI: hip/knee/heel on
@@ -1018,16 +1020,25 @@ def fit_markers(obs_markers, marker_bone, smpl_model, Q, betas_init=None,
     # (§P23: frozen-δ gave 200 mm hip residuals). All frames removes that gap.
     beta = (torch.zeros(nb, dtype=dt) if betas_init is None
             else torch.as_tensor(betas_init, dtype=dt).clone()).requires_grad_(fit_beta)
-    log_s = torch.zeros((), dtype=dt, requires_grad=True)        # s = exp(log_s) > 0
-    delta = torch.zeros(M, 3, dtype=dt, requires_grad=True)
+    log_s = (torch.zeros((), dtype=dt) if s_init is None
+             else torch.log(torch.as_tensor(float(s_init), dtype=dt))).requires_grad_(fit_s)
+    delta = (torch.zeros(M, 3, dtype=dt) if delta_init is None
+             else torch.as_tensor(delta_init, dtype=dt).clone()).requires_grad_(fit_delta)
     # Seed the per-frame ROOT orientation from a rigid (Kabsch) fit to the torso markers, so the
     # body turn lands in the root and not in a contorted spine/limb twist (the ReMoCap-reactor
     # spinning-root bug). Other joints start at rest; β/s/δ at zero. MoSh/SMPLify global-orient init.
     Jrest = _rest_joints_native(smpl_model, None, bone_scale, N_JOINTS).to(dt)
     pose0 = torch.zeros(T, N_JOINTS, 3, dtype=dt)
     pose0[:, 0] = _root_init_kabsch(obs, mb, Jrest, QM)
+    if pose_init is not None:
+        pose0 = torch.as_tensor(pose_init, dtype=dt).to(dev).reshape(-1, N_JOINTS, 3)
+        pose0 = pose0[-1:].expand(T, N_JOINTS, 3).clone() if len(pose0) != T else pose0.clone()
     pose = pose0.clone().requires_grad_(True)
-    trans = root0.clone().requires_grad_(True)
+    trans0 = root0
+    if trans_init is not None:
+        trans0 = torch.as_tensor(trans_init, dtype=dt).to(dev).reshape(-1, 3)
+        trans0 = trans0[-1:].expand(T, 3) if len(trans0) != T else trans0
+    trans = trans0.clone().requires_grad_(True)
     contact, floor = detect_contacts(obs) if lam_contact > 0 else (None, None)
     cm = contact.to(dt) if contact is not None else None
     # §P18 VPoser natural-pose prior (recon form). Per-frame ⇒ pulls each pose onto the natural
@@ -1042,7 +1053,8 @@ def fit_markers(obs_markers, marker_bone, smpl_model, Q, betas_init=None,
         except Exception:
             use_vp = False
     n_it = iters_shape + iters_pose
-    opt = torch.optim.Adam(([beta] if fit_beta else []) + [log_s, delta, pose, trans], lr=lr)
+    opt = torch.optim.Adam(([beta] if fit_beta else []) + ([log_s] if fit_s else [])
+                           + ([delta] if fit_delta else []) + [pose, trans], lr=lr)
     for i in range(n_it):
         opt.zero_grad()
         v, body = markers_of(pose, trans, torch.exp(log_s), beta, delta)

@@ -78,7 +78,8 @@ def fit_smpl(obs, w, pose0=None, lam_contact=8.0, iters=600, Q=None):
 
 
 def fit_smpl_markers(obs_markers, marker_bone, lam_contact=0.0, bone_scale=None,
-                     marker_vert=None, marker_w=None, lam_beta=1.0, return_shape=False):
+                     marker_vert=None, marker_w=None, lam_beta=1.0, return_shape=False,
+                     **solver):
     """§P23 — true-MoSh surface-marker fit. obs_markers [T,M,3] proper-frame + marker_bone [M]
     -> (joints[T,22,3], verts, faces, marker_err_mm, virtual_markers). Q=RXP (obs native Y-up).
     bone_scale defaults to the per-bone anthropometric retarget measured from marker segments.
@@ -90,7 +91,7 @@ def fit_smpl_markers(obs_markers, marker_bone, lam_contact=0.0, bone_scale=None,
     pose, trans, beta, s, delta = fit_markers(obs_markers, marker_bone, smpl, RXP,
                                               lam_contact=lam_contact, bone_scale=bone_scale,
                                               marker_vert=marker_vert, marker_w=marker_w,
-                                              lam_beta=lam_beta)
+                                              lam_beta=lam_beta, **solver)
     jp, vp = forward_proper(smpl, pose, RXP, betas=beta, scale=s, root_target=trans,
                             want_verts=True, bone_scale=bone_scale)
     dt = smpl.dtype
@@ -117,7 +118,9 @@ def fit_smpl_markers(obs_markers, marker_bone, lam_contact=0.0, bone_scale=None,
     if return_shape:
         return (jp.float(), vp.float(), smpl.faces, err, vm.float(),
                 dict(beta=beta.detach().cpu().numpy(), scale=float(s),
-                     bone_scale=np.asarray(bone_scale, np.float64)))
+                     bone_scale=np.asarray(bone_scale, np.float64),
+                     delta=delta.detach().cpu().numpy(),
+                     pose=pose.detach().cpu().numpy(), trans=trans.detach().cpu().numpy()))
     return jp.float(), vp.float(), smpl.faces, err, vm.float()
 
 

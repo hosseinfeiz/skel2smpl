@@ -1838,6 +1838,57 @@ necessary and not sufficient. And nothing has landed in POSE: `physics/markers.p
 body25_to_markers` is still the default `mpos` path. The §P25 kinematic-floor table has NOT
 been re-measured on the regressor arm.
 
+### §P25.c — causal split: shape ONCE on a warm-up window, pose-only per chunk (2026-08-17)
+
+**Why.** `pose_estimation/physics/loop.py` is an ONLINE loop — the physics state associates the
+2D, 6 keys (100 ms) at a time. It cannot call a fit that spans the sequence, so it was feeding
+the tracker a per-frame index remap plus a convention offset READ FROM the offline global fit.
+That offline read is the last thing in the loop that a closed-loop claim should not lean on.
+
+**Change (additive, defaults unchanged).** `fit_markers` gains `s_init/fit_s`,
+`delta_init/fit_delta`, `pose_init`, `trans_init`; `fit_smpl_markers` forwards `**solver` and
+returns `pose`, `trans`, `delta` in the `return_shape` dict. `betas_init/fit_beta` already
+existed. `POSE/physics/causal_fit.py:CausalBody25Fit` composes them: β, s, `bone_scale` and the
+pelvis alignment are solved ONCE on a warm-up window and frozen; each later chunk solves θ_t and
+trans_t only, warm-started from the previous chunk, carrying 2 of its frames so the smoothness
+term spans the seam. No key past the emitted chunk is read.
+
+**This touches §P23's settled invariant** ("β + s + δ shared over ALL frames"; a 12-frame freeze
+gave 200 mm hip residuals). It is not a reversal: the freeze comes from 120 keys, not 12, and δ
+is unused on the §P25.r regressor path. Measured, the freeze costs residual but does not blow up
+— **19.0 mm (p0) / 25.5 mm (p1)** per chunk against the global fit's 16.56 / 15.94 mm.
+
+**MEASURED — NOT a clean win, so it did NOT become the default**
+(`POSE/tests/probe_causal_fit.py`, refine2000, warm-up 120 keys, 10 chunks of 6, overlap 2,
+4 views, conf≥0.3; input is the loop's own chunked Stage-3 triangulation, not the stored fit):
+
+| p0 | bone-std | jitter | reproj (vm) |
+|---|---|---|---|
+| chunked triangulation → `body25_to_markers` | 12.1 mm | 3.53 mm | 8.07 px |
+| causal fit, 60 / 120 / 240 iters | 0.5 / 0.6 / 0.7 mm | 2.96 / **2.07** / 2.74 mm | +0.45 / +0.40 / +0.38 px |
+
+| p1 | bone-std | jitter | reproj (vm) |
+|---|---|---|---|
+| chunked triangulation → `body25_to_markers` | 17.1 mm | 6.06 mm | 4.66 px |
+| causal fit, 60 / 120 / 240 iters | 0.3 / 0.3 / 0.2 mm | 5.36 / **4.77** / 5.27 mm | +0.75 / +0.72 / +0.70 px |
+
+Jitter improves (3.53 → 2.07, 6.06 → 4.77 at 120 iters) and bone-std collapses to ~0.5 mm — but
+bone-std collapsing is what a RIGID body does by construction, which is precisely the §P25 gate-3
+rigidity confound, so it is not evidence of accuracy. The independent ruler moves the wrong way:
+**+0.40 px (p0) / +0.72 px (p1)** against the raw triangulation, versus the global regressor
+fit's +0.115 px. Two rulers, opposite signs, on 60 keys of one session.
+
+**Cost is NOT established.** The sweep ran with load average 18.6–30.2 on 32 cores and another
+job at 91 % CPU; wall clock came out non-monotonic in iteration count (60 iters slower than 240
+on p1), which is proof the timings are contaminated. Order of magnitude only: hundreds of ms to
+seconds per 6-key chunk, i.e. minutes to ~1 h for 334 chunks × 2 persons. Re-time on a quiet
+machine before quoting any number.
+
+**OPEN:** gate 2 (NOT RENDERED) applies here too; 60 keys is a short span; and no end-to-end
+tracker comparison exists — PHYSICS's tree is still churning. `--fit causal` is opt-in in
+`loop.py` for exactly that comparison; `--fit shift` remains the default because the causal arm
+has not won.
+
 ---
 
 **Superseded note (kept for the record) — replace the free δ with the BODY25 regressor.** §P25
