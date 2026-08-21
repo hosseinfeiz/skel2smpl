@@ -105,7 +105,31 @@ Turn the task into a render + number gate (e.g. §P23: "marker mean ≤ 30 mm AN
 the rendered body is upright/natural"). Probe → fix → render → confirm the gate.
 
 ## 8. Git workflow
-Work directly on `main` (no branches/worktrees/merges). **Commit after every verified change —
+**Every experiment is born on a branch, and `main` only ever receives winners.**
+`main` is the record of accepted work, not a workspace. Before the first edit of a
+new mechanism, branch: `work/<mechanism>-<date>` for a change under test,
+`arms/<what>-<date>` for a design that will be parked whatever the verdict. Never
+edit `main` directly for anything a gate can measure, never carry two mechanisms on
+one branch — a branch that changes two things cannot be attributed by any gate — and
+never start a branch from a dirty tree, because the diff then contains work no verdict
+covers. Say which branch you are on in the same line as the first edit, and name the
+branch after the mechanism, never after an attempt number alone.
+
+A branch reaches `main` only when all four hold, in this order: (1) its gate was run
+in full, never a smoke run; (2) the mechanism improved the number it was predicted to
+improve, registered with its reject clause BEFORE the run; (3) no accepted number
+regressed; (4) **I have seen the table and said to merge.** Approval is per merge and
+never inherited — an earlier "yes, that direction" is not permission to merge the next
+branch. Report the verdict and stop: do not merge, do not fast-forward, do not push on
+your own initiative. A branch that loses is not deleted and not fixed in place — it is
+left as `arms/<what>-<date>`, named in the log with its number, and `main` stays where
+it was. Merge with `--no-ff` so the branch is one reviewable unit, and put the deciding
+number in the merge message. **This overrides any skill or flow that would edit `main`
+directly.**
+
+Commits still land on the branch the instant each change is verified (below).
+
+**Commit after every verified change —
 immediately, never batch.** The instant a fit change renders correctly and hits its number, commit it
 with a message quoting the gate. One logical change = one commit. `scratch_*.py` stay uncommitted.
 This package is its own git repo; vr and koopman are separate repos — commit each where its files live.
